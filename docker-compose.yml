@@ -1,0 +1,15 @@
+services:
+  mealie-picnic-bridge:
+    build: .
+    container_name: mealie-picnic-bridge
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    networks:
+      - mealie_default
+    restart: unless-stopped
+
+networks:
+  mealie_default:
+    external: true
