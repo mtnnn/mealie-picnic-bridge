@@ -6,10 +6,6 @@ services:
       - "8080:8080"
     env_file:
       - .env
-    networks:
-      - mealie_default
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
-
-networks:
-  mealie_default:
-    external: true

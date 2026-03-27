@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -25,9 +26,10 @@ async def lifespan(app: FastAPI):
     global mealie, picnic
     mealie = MealieClient(settings.MEALIE_HOST, settings.MEALIE_TOKEN)
     picnic = PicnicClient(
-        settings.PICNIC_USERNAME,
-        settings.PICNIC_PASSWORD,
-        settings.PICNIC_COUNTRY_CODE,
+        username=settings.PICNIC_USERNAME,
+        password=settings.PICNIC_PASSWORD,
+        country_code=settings.PICNIC_COUNTRY_CODE,
+        auth_token=settings.PICNIC_AUTH_TOKEN,
     )
     logger.info("Clients initialized")
     yield
@@ -162,7 +164,7 @@ async def sync():
                     await asyncio.to_thread(
                         picnic.add_to_cart, cached_id, quantity
                     )
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(random.uniform(10, 25))
                     items_results.append(
                         SyncItemResult(
                             name=ingredient_name,
@@ -174,7 +176,8 @@ async def sync():
                     added += 1
                     continue
 
-                # Search Picnic
+                # Search Picnic (delay to mimic human behaviour)
+                await asyncio.sleep(random.uniform(10, 25))
                 products = await asyncio.to_thread(
                     picnic.search, ingredient_name
                 )
@@ -210,7 +213,7 @@ async def sync():
                 await asyncio.to_thread(
                     picnic.add_to_cart, product_id, quantity
                 )
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(random.uniform(10, 25))
 
                 items_results.append(
                     SyncItemResult(
