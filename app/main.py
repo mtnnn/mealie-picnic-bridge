@@ -57,6 +57,7 @@ async def lifespan(app: FastAPI):
         logger.info("Using fuzzy matching (LLM matching disabled)")
     logger.info("Clients initialized")
     yield
+    picnic.close()
     await mealie.close()
 
 
@@ -89,6 +90,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <body>
     <h1>Mealie Picnic Bridge</h1>
     <button id="syncBtn" onclick="doSync()">Sync naar Picnic</button>
+    <label style="margin-left:1rem"><input type="checkbox" id="skipCache"> Cache overslaan</label>
     <div id="status"></div>
 
     <script>
@@ -99,7 +101,9 @@ INDEX_HTML = """<!DOCTYPE html>
             btn.textContent = 'Bezig met sync...';
             status.innerHTML = '';
             try {
-                const resp = await fetch('/sync', { method: 'POST' });
+                const skip = document.getElementById('skipCache').checked;
+                const url = skip ? '/sync?skip_cache=true' : '/sync';
+                const resp = await fetch(url, { method: 'POST' });
                 const data = await resp.json();
                 renderResult(data);
             } catch (e) {
@@ -152,8 +156,95 @@ async def status():
     return {"last_sync": models.last_sync_result}
 
 
+@app.get("/auth", response_class=HTMLResponse)
+async def auth_page():
+    if not picnic.needs_2fa:
+        return HTMLResponse("<h3>Already authenticated</h3><p>Auth token: <code>"
+                            + picnic.auth_token[:12] + "...</code></p>"
+                            "<p><a href='/'>Back</a></p>")
+    return HTMLResponse("""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Picnic 2FA</title>
+<style>body{font-family:system-ui;max-width:400px;margin:2rem auto;padding:0 1rem}
+input,button{padding:10px 16px;font-size:1rem;border-radius:6px;border:1px solid #ccc;margin:4px}
+button{background:#4CAF50;color:white;border:none;cursor:pointer}
+#msg{margin-top:1rem;padding:8px;border-radius:4px}</style></head>
+<body>
+<h2>Picnic 2FA</h2>
+<p>Step 1: Request SMS code</p>
+<button onclick="requestCode()">Stuur SMS code</button>
+<p style="margin-top:1rem">Step 2: Enter the code</p>
+<input id="code" placeholder="123456" maxlength="6">
+<button onclick="verifyCode()">Verifieer</button>
+<div id="msg"></div>
+<script>
+const msg = document.getElementById('msg');
+async function requestCode() {
+    msg.textContent = 'Sending...';
+    const r = await fetch('/auth/request-code', {method:'POST'});
+    const d = await r.json();
+    msg.textContent = d.ok ? 'SMS verstuurd!' : 'Fout: ' + d.error;
+    msg.style.background = d.ok ? '#e8f5e9' : '#ffebee';
+}
+async function verifyCode() {
+    const code = document.getElementById('code').value;
+    if (!code) return;
+    msg.textContent = 'Verifying...';
+    const r = await fetch('/auth/verify', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({code})});
+    const d = await r.json();
+    msg.textContent = d.ok ? 'Authenticated! Token: ' + d.token_preview + ' — Save as PICNIC_AUTH_TOKEN' : 'Fout: ' + d.error;
+    msg.style.background = d.ok ? '#e8f5e9' : '#ffebee';
+}
+</script></body></html>""")
+
+
+@app.post("/auth/request-code")
+async def auth_request_code():
+    try:
+        await asyncio.to_thread(picnic.request_2fa_code)
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/auth/verify")
+async def auth_verify(body: dict):
+    try:
+        await asyncio.to_thread(picnic.verify_2fa_code, body["code"])
+        _save_token_to_env(picnic.auth_token)
+        return {"ok": True, "token_preview": picnic.auth_token[:12] + "..."}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+_ENV_HOST_PATH = "/app/.env.host"
+
+
+def _save_token_to_env(token: str) -> None:
+    """Write PICNIC_AUTH_TOKEN back to the mounted .env so it survives restarts."""
+    try:
+        path = _ENV_HOST_PATH
+        with open(path) as f:
+            lines = f.readlines()
+
+        found = False
+        for i, line in enumerate(lines):
+            if line.startswith("PICNIC_AUTH_TOKEN="):
+                lines[i] = f"PICNIC_AUTH_TOKEN={token}\n"
+                found = True
+                break
+
+        if not found:
+            lines.append(f"PICNIC_AUTH_TOKEN={token}\n")
+
+        with open(path, "w") as f:
+            f.writelines(lines)
+        logger.info("Auth token saved to .env")
+    except Exception:
+        logger.warning("Could not save token to .env", exc_info=True)
+
+
 @app.post("/sync", response_model=SyncResult)
-async def sync():
+async def sync(skip_cache: bool = False):
     items_results: list[SyncItemResult] = []
     added = 0
     no_match_count = 0
@@ -196,7 +287,7 @@ async def sync():
                 cached_id = extras.get("picnic_product_id")
                 cached_name = extras.get("picnic_product_name")
 
-                if cached_id:
+                if cached_id and not skip_cache:
                     await asyncio.to_thread(
                         picnic.add_to_cart, cached_id, quantity
                     )

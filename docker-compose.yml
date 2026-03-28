@@ -6,6 +6,8 @@ services:
       - "8080:8080"
     env_file:
       - .env
+    volumes:
+      - ./.env:/app/.env.host
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

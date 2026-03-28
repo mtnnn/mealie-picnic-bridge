@@ -1,44 +1,85 @@
 # Mealie Picnic Bridge
 
-FastAPI service die je Mealie boodschappenlijst synchroniseert naar je Picnic winkelmandje.
+Automatically syncs your [Mealie](https://mealie.io/) shopping lists to your [Picnic](https://picnic.app/) cart.
 
-## Hoe het werkt
+## How it works
 
-1. Haalt alle items op van je Mealie shopping lists
-2. Parsed ingredientnamen (gebruikt Mealie's food name, met ingredient-parser-nlp als fallback)
-3. Zoekt elk product op bij Picnic via fuzzy matching (rapidfuzz)
-4. Slaat de Picnic product mapping op in Mealie's `food.extras` (cache)
-5. Voegt producten toe aan je Picnic mandje
+1. Fetches all shopping lists from Mealie
+2. Searches Picnic for matching products per ingredient
+3. Matches ingredients to products using fuzzy matching or LLM-based matching (Claude)
+4. Adds matched products to your Picnic cart
+5. Caches product mappings in Mealie for faster future syncs
 
 ## Setup
 
+### 1. Configure environment
+
 ```bash
 cp .env.example .env
-# Vul je credentials in
-docker compose up --build
 ```
 
-De service draait op `http://localhost:8080`.
+Edit `.env` with your credentials:
+
+| Variable | Required | Description |
+|---|---|---|
+| `MEALIE_HOST` | Yes | Mealie instance URL |
+| `MEALIE_TOKEN` | Yes | Mealie API token |
+| `PICNIC_USERNAME` | Yes | Picnic account email |
+| `PICNIC_PASSWORD` | Yes | Picnic account password |
+| `PICNIC_AUTH_TOKEN` | No | Saved after 2FA, reused across restarts |
+| `PICNIC_COUNTRY_CODE` | No | `NL` (default) or `DE` |
+| `FUZZY_THRESHOLD` | No | Match score threshold 0-100 (default: 65) |
+| `LLM_MATCHING_ENABLED` | No | Enable Claude-based matching (default: false) |
+| `ANTHROPIC_API_KEY` | No | Required when LLM matching is enabled |
+| `LLM_MODEL` | No | Claude model to use (default: claude-haiku-4-5-20251001) |
+
+### 2. Run with Docker
+
+```bash
+docker compose up -d --build
+```
+
+The web UI is available at `http://localhost:8080`.
+
+### 3. Authenticate with Picnic
+
+If your Picnic account uses 2FA (most do), go to `http://localhost:8080/auth` to complete verification. The auth token is automatically saved to your `.env` file for future restarts.
+
+## Usage
+
+- Open `http://localhost:8080` and click **Sync naar Picnic**
+- Check **Cache overslaan** to force fresh product searches (ignores cached mappings)
+- Results show match status per item: matched, LLM matched, cached, no match, or error
+
+## Matching strategies
+
+### Fuzzy matching (default)
+
+Uses token-based string similarity (`rapidfuzz`) to match ingredient names to Picnic product names. Fast but can miss semantic matches.
+
+### LLM matching (optional)
+
+Sends ingredient names with candidate products to Claude in a single batch request. Claude considers ingredient amounts, packaging sizes, and product categories to select the best match. Falls back to fuzzy matching on failure.
+
+Enable with `LLM_MATCHING_ENABLED=true` and a valid `ANTHROPIC_API_KEY`.
 
 ## Endpoints
 
-| Methode | Path      | Beschrijving                           |
-|---------|-----------|----------------------------------------|
-| GET     | `/`       | Web UI met sync knop                   |
-| POST    | `/sync`   | Start synchronisatie                   |
-| GET     | `/status` | Laatste sync resultaten                |
+| Method | Path | Description |
+|---|---|---|
+| GET | `/` | Web UI with sync button |
+| POST | `/sync` | Start sync (`?skip_cache=true` to bypass cache) |
+| GET | `/status` | Last sync results |
+| GET | `/auth` | 2FA authentication page |
 
-## Environment variables
+## Tech stack
 
-| Variabele             | Verplicht | Default | Beschrijving                  |
-|-----------------------|-----------|---------|-------------------------------|
-| `MEALIE_HOST`         | Ja        | -       | Mealie URL (bijv. `http://mealie:9000`) |
-| `MEALIE_TOKEN`        | Ja        | -       | Mealie API Bearer token       |
-| `PICNIC_USERNAME`     | Ja        | -       | Picnic account email          |
-| `PICNIC_PASSWORD`     | Ja        | -       | Picnic wachtwoord             |
-| `PICNIC_COUNTRY_CODE` | Nee       | `NL`    | Land code                     |
-| `FUZZY_THRESHOLD`     | Nee       | `65`    | Minimum fuzzy match score (0-100) |
+- Python 3.12 / FastAPI / uvicorn
+- Direct Picnic API integration (no third-party wrapper)
+- httpx for async HTTP
+- rapidfuzz for fuzzy string matching
+- Anthropic Claude API for LLM matching
 
-## Netwerk
+## Acknowledgements
 
-De `docker-compose.yml` verwacht een bestaand Docker netwerk `mealie_default`. Dit is het netwerk waar Mealie op draait. Als je netwerk anders heet, pas dit aan in `docker-compose.yml`.
+The Picnic API integration was built using endpoint documentation and auth flow from [mcp-picnic](https://github.com/ivo-toby/mcp-picnic) by Ivo Toby — an MCP server that lets AI assistants interact with the Picnic API.
