@@ -2,6 +2,7 @@ import asyncio
 import logging
 import random
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from fastapi import FastAPI
@@ -9,7 +10,8 @@ from fastapi.responses import HTMLResponse
 
 from app import models
 from app.config import settings
-from app.matcher import find_best_match, llm_match, parse_ingredient_name
+from app.llm_matcher import LLMMatcher, MatchRequest
+from app.matcher import find_best_match, parse_ingredient_name
 from app.mealie import MealieClient
 from app.models import ItemStatus, SyncItemResult, SyncResult
 from app.picnic_client import PicnicClient
@@ -19,11 +21,24 @@ logger = logging.getLogger(__name__)
 
 mealie: MealieClient
 picnic: PicnicClient
+llm_matcher: LLMMatcher | None = None
+
+
+@dataclass
+class PendingItem:
+    ingredient_name: str
+    products: list[dict]
+    food: dict
+    quantity: int
+    raw_quantity: float | None = None
+    unit_name: str | None = None
+    matched_product: dict | None = field(default=None, init=False)
+    llm_matched: bool = field(default=False, init=False)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global mealie, picnic
+    global mealie, picnic, llm_matcher
     mealie = MealieClient(settings.MEALIE_HOST, settings.MEALIE_TOKEN)
     picnic = PicnicClient(
         username=settings.PICNIC_USERNAME,
@@ -31,6 +46,15 @@ async def lifespan(app: FastAPI):
         country_code=settings.PICNIC_COUNTRY_CODE,
         auth_token=settings.PICNIC_AUTH_TOKEN,
     )
+    if settings.LLM_MATCHING_ENABLED and settings.ANTHROPIC_API_KEY:
+        llm_matcher = LLMMatcher(
+            api_key=settings.ANTHROPIC_API_KEY,
+            model=settings.LLM_MODEL,
+            max_products_per_item=settings.LLM_MAX_PRODUCTS_PER_ITEM,
+        )
+        logger.info("LLM matching enabled (model: %s)", settings.LLM_MODEL)
+    else:
+        logger.info("Using fuzzy matching (LLM matching disabled)")
     logger.info("Clients initialized")
     yield
     await mealie.close()
@@ -56,6 +80,7 @@ INDEX_HTML = """<!DOCTYPE html>
         .result { background: #f5f5f5; border-radius: 6px; padding: 1rem; margin-top: 1rem; }
         .item { padding: 4px 0; border-bottom: 1px solid #eee; }
         .matched { color: #2e7d32; }
+        .llm_matched { color: #6a1b9a; }
         .cached { color: #1565c0; }
         .no_match { color: #f57f17; }
         .error { color: #c62828; }
@@ -133,10 +158,12 @@ async def sync():
     added = 0
     no_match_count = 0
     error_count = 0
+    pending: list[PendingItem] = []
 
     shopping_lists = await mealie.get_shopping_lists()
     logger.info("Found %d shopping lists", len(shopping_lists))
 
+    # --- Phase 1: Collect --- Handle cached items, search Picnic for the rest
     for sl in shopping_lists:
         list_items = await mealie.get_list_items(sl["id"])
         if not list_items:
@@ -163,7 +190,6 @@ async def sync():
                 cached_name = extras.get("picnic_product_name")
 
                 if cached_id:
-                    # Use cached mapping
                     await asyncio.to_thread(
                         picnic.add_to_cart, cached_id, quantity
                     )
@@ -179,32 +205,13 @@ async def sync():
                     added += 1
                     continue
 
-                # Search Picnic (delay to mimic human behaviour)
+                # Search Picnic
                 await asyncio.sleep(random.uniform(10, 25))
                 products = await asyncio.to_thread(
                     picnic.search, ingredient_name
                 )
 
-                if settings.LLM_ENABLED and settings.ANTHROPIC_API_KEY:
-                    match = await asyncio.to_thread(
-                        llm_match,
-                        ingredient_name,
-                        raw_quantity,
-                        unit_name,
-                        products,
-                        settings.ANTHROPIC_API_KEY,
-                    )
-                    if match is None:
-                        # Fall back to fuzzy when LLM finds nothing
-                        match = find_best_match(
-                            ingredient_name, products, settings.FUZZY_THRESHOLD
-                        )
-                else:
-                    match = find_best_match(
-                        ingredient_name, products, settings.FUZZY_THRESHOLD
-                    )
-
-                if match is None:
+                if not products:
                     items_results.append(
                         SyncItemResult(
                             name=ingredient_name,
@@ -214,39 +221,19 @@ async def sync():
                     no_match_count += 1
                     continue
 
-                product, score = match
-                product_id = str(product["id"])
-                product_name = product.get("name", "")
-
-                # Cache the mapping in Mealie food extras
-                if food.get("id"):
-                    await mealie.update_food_extras(
-                        food["id"],
-                        {
-                            "picnic_product_id": product_id,
-                            "picnic_product_name": product_name,
-                        },
-                    )
-
-                # Add to Picnic cart
-                await asyncio.to_thread(
-                    picnic.add_to_cart, product_id, quantity
-                )
-                await asyncio.sleep(random.uniform(10, 25))
-
-                items_results.append(
-                    SyncItemResult(
-                        name=ingredient_name,
-                        status=ItemStatus.matched,
-                        picnic_product_id=product_id,
-                        picnic_product_name=product_name,
-                        score=score,
+                pending.append(
+                    PendingItem(
+                        ingredient_name=ingredient_name,
+                        products=products,
+                        food=food,
+                        quantity=quantity,
+                        raw_quantity=raw_quantity,
+                        unit_name=unit_name,
                     )
                 )
-                added += 1
 
             except Exception as exc:
-                logger.exception("Error processing item '%s'", ingredient_name)
+                logger.exception("Error collecting item '%s'", ingredient_name)
                 items_results.append(
                     SyncItemResult(
                         name=ingredient_name,
@@ -255,6 +242,92 @@ async def sync():
                     )
                 )
                 error_count += 1
+
+    # --- Phase 2: Match --- LLM batch or fuzzy per-item
+    if pending and llm_matcher:
+        try:
+            requests = [
+                MatchRequest(
+                    p.ingredient_name,
+                    p.products,
+                    quantity=p.raw_quantity,
+                    unit=p.unit_name,
+                )
+                for p in pending
+            ]
+            llm_results = await llm_matcher.match_batch(requests)
+            for p, result in zip(pending, llm_results):
+                p.matched_product = result.selected_product
+                p.llm_matched = result.selected_product is not None
+        except Exception:
+            logger.warning("LLM matching failed, falling back to fuzzy matching")
+            for p in pending:
+                match = find_best_match(
+                    p.ingredient_name, p.products, settings.FUZZY_THRESHOLD
+                )
+                p.matched_product = match[0] if match else None
+    else:
+        for p in pending:
+            match = find_best_match(
+                p.ingredient_name, p.products, settings.FUZZY_THRESHOLD
+            )
+            p.matched_product = match[0] if match else None
+
+    # --- Phase 3: Process --- Add to cart, cache, build results
+    for p in pending:
+        try:
+            if p.matched_product is None:
+                items_results.append(
+                    SyncItemResult(
+                        name=p.ingredient_name,
+                        status=ItemStatus.no_match,
+                    )
+                )
+                no_match_count += 1
+                continue
+
+            product_id = str(p.matched_product["id"])
+            product_name = p.matched_product.get("name", "")
+
+            # Cache in Mealie food extras
+            if p.food.get("id"):
+                await mealie.update_food_extras(
+                    p.food["id"],
+                    {
+                        "picnic_product_id": product_id,
+                        "picnic_product_name": product_name,
+                    },
+                )
+
+            # Add to Picnic cart
+            await asyncio.to_thread(
+                picnic.add_to_cart, product_id, p.quantity
+            )
+            await asyncio.sleep(random.uniform(10, 25))
+
+            status = (
+                ItemStatus.llm_matched if p.llm_matched else ItemStatus.matched
+            )
+            items_results.append(
+                SyncItemResult(
+                    name=p.ingredient_name,
+                    status=status,
+                    picnic_product_id=product_id,
+                    picnic_product_name=product_name,
+                )
+            )
+            added += 1
+
+        except Exception as exc:
+            logger.exception("Error processing item '%s'", p.ingredient_name)
+            items_results.append(
+                SyncItemResult(
+                    name=p.ingredient_name,
+                    status=ItemStatus.error,
+                    error=str(exc),
+                )
+            )
+            error_count += 1
 
     result = SyncResult(
         timestamp=datetime.now(),

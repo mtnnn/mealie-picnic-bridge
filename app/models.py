@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 class ItemStatus(str, Enum):
     matched = "matched"
+    llm_matched = "llm_matched"
     cached = "cached"
     no_match = "no_match"
     error = "error"
