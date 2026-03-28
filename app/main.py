@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
 
 from app import models
 from app.config import settings
-from app.matcher import find_best_match, parse_ingredient_name
+from app.matcher import find_best_match, llm_match, parse_ingredient_name
 from app.mealie import MealieClient
 from app.models import ItemStatus, SyncItemResult, SyncResult
 from app.picnic_client import PicnicClient
@@ -150,6 +150,9 @@ async def sync():
             display = item.get("display", "")
             note = item.get("note")
             quantity = max(1, round(item.get("quantity", 1) or 1))
+            raw_quantity = item.get("quantity") or 1
+            unit_obj = item.get("unit") or {}
+            unit_name = unit_obj.get("name") or unit_obj.get("abbreviation") or None
 
             ingredient_name = parse_ingredient_name(display, note, food_name)
 
@@ -181,9 +184,25 @@ async def sync():
                 products = await asyncio.to_thread(
                     picnic.search, ingredient_name
                 )
-                match = find_best_match(
-                    ingredient_name, products, settings.FUZZY_THRESHOLD
-                )
+
+                if settings.LLM_ENABLED and settings.ANTHROPIC_API_KEY:
+                    match = await asyncio.to_thread(
+                        llm_match,
+                        ingredient_name,
+                        raw_quantity,
+                        unit_name,
+                        products,
+                        settings.ANTHROPIC_API_KEY,
+                    )
+                    if match is None:
+                        # Fall back to fuzzy when LLM finds nothing
+                        match = find_best_match(
+                            ingredient_name, products, settings.FUZZY_THRESHOLD
+                        )
+                else:
+                    match = find_best_match(
+                        ingredient_name, products, settings.FUZZY_THRESHOLD
+                    )
 
                 if match is None:
                     items_results.append(

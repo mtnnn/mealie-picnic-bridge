@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     PICNIC_AUTH_TOKEN: str = ""
     PICNIC_COUNTRY_CODE: str = "NL"
     FUZZY_THRESHOLD: int = 65
+    ANTHROPIC_API_KEY: str = ""
+    LLM_ENABLED: bool = False
 
 
 settings = Settings()
