@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 
 from python_picnic_api2 import PicnicAPI
 
@@ -52,15 +53,39 @@ class PicnicClient:
 
         logger.info("Picnic base URL: %s", self.api._base_url)
 
-    def search(self, query: str) -> list[dict]:
-        groups = self.api.search(query)
-        # Flatten: each group has an "items" list of product dicts
+    def _flatten_results(self, groups: list) -> list[dict]:
         products = []
         for group in groups:
             if isinstance(group, dict) and "items" in group:
                 products.extend(group["items"])
             elif isinstance(group, dict) and "id" in group:
                 products.append(group)
+        return products
+
+    def _try_search(self, query: str) -> list[dict]:
+        try:
+            groups = self.api.search(query)
+            return self._flatten_results(groups)
+        except Exception:
+            logger.warning("Picnic search failed for '%s'", query, exc_info=True)
+            return []
+
+    def search(self, query: str) -> list[dict]:
+        products = self._try_search(query)
+
+        # Retry: split camelCase ("cottageCheese" → "cottage Cheese")
+        if not products:
+            spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", query)
+            if spaced != query:
+                logger.info("Retrying search with '%s' (was '%s')", spaced, query)
+                products = self._try_search(spaced)
+
+        # Retry: truncated query for compound words without spaces
+        # "cottagecheese" → search "cottage" (first half+1), Picnic fuzzy-matches the rest
+        if not products and " " not in query and len(query) > 6:
+            truncated = query[: len(query) // 2 + 1]
+            logger.info("Retrying search with '%s' (truncated from '%s')", truncated, query)
+            products = self._try_search(truncated)
 
         logger.info("Search '%s' → %d products", query, len(products))
         if products:

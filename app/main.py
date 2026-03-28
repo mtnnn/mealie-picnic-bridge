@@ -176,10 +176,17 @@ async def sync():
             food_name = food.get("name")
             display = item.get("display", "")
             note = item.get("note")
-            quantity = max(1, round(item.get("quantity", 1) or 1))
             raw_quantity = item.get("quantity") or 1
             unit_obj = item.get("unit") or {}
             unit_name = unit_obj.get("name") or unit_obj.get("abbreviation") or None
+
+            # Cart count: only use raw quantity when there's no unit (meaning
+            # "3 tomatoes" = 3 items). When a unit like g/ml/cup is present
+            # (e.g. "500 gram"), the cart count is always 1.
+            if unit_name:
+                quantity = 1
+            else:
+                quantity = max(1, round(raw_quantity))
 
             ingredient_name = parse_ingredient_name(display, note, food_name)
 
