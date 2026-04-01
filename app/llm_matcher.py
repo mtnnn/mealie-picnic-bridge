@@ -8,7 +8,8 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 Je bent een assistent voor boodschappen bij de Nederlandse online supermarkt Picnic.
-Je taak is om kookingrediënten te matchen met de juiste supermarktproducten.
+Je taak is om kookingrediënten te matchen met de juiste supermarktproducten EN te bepalen \
+hoeveel stuks er in het winkelmandje moeten.
 
 BELANGRIJKE REGELS:
 - Selecteer ALLEEN voedsel- en kookproducten. Selecteer NOOIT schoonmaakmiddelen, \
@@ -19,8 +20,18 @@ als selected_id voor dat item.
 - Voorbeeld: "citroen" als kookingrediënt betekent de vrucht citroen, \
 niet een schoonmaakmiddel met citroengeur.
 - Kies bij twijfel het meest basale/generieke product.
-- Houd rekening met de benodigde hoeveelheid en kies de verpakkingsgrootte die daar het \
-beste bij past.\
+
+HOEVEELHEID BEPALEN:
+- Kijk naar de benodigde hoeveelheid (amount) en de verpakkingsgrootte (unit_quantity) \
+van het gekozen product.
+- Bereken hoeveel stuks van het product nodig zijn om de benodigde hoeveelheid te dekken.
+- Voorbeeld: recept vraagt "10 g basilicum", product is "Basilicum 15g" → quantity = 1
+- Voorbeeld: recept vraagt "8 ansjovis", product is "Ansjovisfilets blik 45g" → quantity = 1 \
+(één blikje bevat genoeg ansjovisfilets)
+- Voorbeeld: recept vraagt "6 uien", product is "Uien 1 stuk" → quantity = 6
+- Voorbeeld: recept vraagt "1 kg aardappelen", product is "Aardappelen 500g" → quantity = 2
+- Bij twijfel, kies liever 1 te veel dan te weinig.
+- Als er geen amount is opgegeven, gebruik quantity = 1.\
 """
 
 MATCH_TOOL = {
@@ -42,8 +53,12 @@ MATCH_TOOL = {
                             "type": ["string", "null"],
                             "description": "The product ID of the best match, or null if no suitable product.",
                         },
+                        "recommended_quantity": {
+                            "type": "integer",
+                            "description": "How many units of this product to add to the cart, based on the recipe amount and the product's package size. Minimum 1.",
+                        },
                     },
-                    "required": ["index", "selected_id"],
+                    "required": ["index", "selected_id", "recommended_quantity"],
                 },
             },
         },
@@ -64,6 +79,7 @@ class MatchRequest:
 class MatchResult:
     ingredient_name: str
     selected_product: dict | None
+    recommended_quantity: int = 1
 
 
 class LLMMatcher:
@@ -133,33 +149,44 @@ class LLMMatcher:
             logger.warning("LLM response did not contain tool use")
             raise ValueError("No tool use in LLM response")
 
-        # Build a lookup of index -> selected_id
-        selections: dict[int, str | None] = {}
+        logger.debug("LLM raw response: %s", json.dumps(tool_input, ensure_ascii=False))
+
+        # Build a lookup of index -> (selected_id, recommended_quantity)
+        selections: dict[int, tuple[str | None, int]] = {}
         for match in tool_input.get("matches", []):
-            selections[match["index"]] = match.get("selected_id")
+            qty = match.get("recommended_quantity", 1)
+            qty = max(1, qty) if isinstance(qty, int) else 1
+            selected_id = match.get("selected_id")
+            if isinstance(selected_id, str):
+                selected_id = selected_id.strip()
+            selections[match["index"]] = (selected_id, qty)
 
         # Map selections back to products
         results: list[MatchResult] = []
         for i, item in enumerate(items):
-            selected_id = selections.get(i)
+            selected_id, rec_qty = selections.get(i, (None, 1))
             selected_product = None
             if selected_id is not None:
+                # Build lookup of candidate IDs for debug logging
+                candidate_ids = [str(p.get("id", "")) for p in item.products[:self.max_products_per_item]]
                 for p in item.products:
                     if str(p.get("id", "")) == selected_id:
                         selected_product = p
                         break
                 if selected_product is None:
                     logger.warning(
-                        "LLM selected unknown product ID '%s' for '%s'",
+                        "LLM selected unknown product ID '%s' for '%s' (candidates: %s)",
                         selected_id,
                         item.ingredient_name,
+                        candidate_ids[:5],
                     )
 
             if selected_product:
                 logger.info(
-                    "LLM matched '%s' → '%s'",
+                    "LLM matched '%s' → '%s' (qty: %d)",
                     item.ingredient_name,
                     selected_product.get("name"),
+                    rec_qty,
                 )
             else:
                 logger.info(
@@ -170,6 +197,7 @@ class LLMMatcher:
                 MatchResult(
                     ingredient_name=item.ingredient_name,
                     selected_product=selected_product,
+                    recommended_quantity=rec_qty,
                 )
             )
 

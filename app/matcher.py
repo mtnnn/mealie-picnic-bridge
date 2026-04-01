@@ -1,8 +1,15 @@
 import logging
+import re
 
 from rapidfuzz import fuzz
 
 logger = logging.getLogger(__name__)
+
+# Matches leading quantity patterns like "1 kg ", "310 g ", "2.5 l ", "100 ml "
+_LEADING_QTY_RE = re.compile(
+    r"^\d+(?:[.,]\d+)?\s*(?:kg|g|gr|gram|ml|l|liter|cl|dl|el|tl|stuks?|stuk|plakken|plakjes|sneetjes)\s+",
+    re.IGNORECASE,
+)
 
 
 def parse_ingredient_name(
@@ -10,7 +17,7 @@ def parse_ingredient_name(
 ) -> str:
     # Prefer Mealie's structured food name (already clean)
     if food_name:
-        return food_name
+        return _strip_leading_quantity(food_name)
 
     # Try ingredient-parser-nlp for unstructured text
     text = display or note or ""
@@ -24,7 +31,15 @@ def parse_ingredient_name(
         except Exception:
             logger.debug("ingredient-parser failed for: %s", text)
 
-    return text.strip() or "unknown"
+    return _strip_leading_quantity(text.strip()) or "unknown"
+
+
+def _strip_leading_quantity(name: str) -> str:
+    """Remove leading quantity+unit from an ingredient name."""
+    cleaned = _LEADING_QTY_RE.sub("", name).strip()
+    if cleaned:
+        return cleaned
+    return name
 
 
 def find_best_match(

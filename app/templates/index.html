@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="main-container">
+    {% include "components/sync_bar.html" %}
+    {% include "components/progress_bar.html" %}
+
+    <div class="panels">
+        {% include "components/shopping_panel.html" %}
+        {% include "components/cart_panel.html" %}
+    </div>
+</div>
+{% endblock %}

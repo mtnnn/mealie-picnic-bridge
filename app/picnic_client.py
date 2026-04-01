@@ -120,6 +120,20 @@ class PicnicClient:
             logger.info("Retrying search with '%s' (truncated from '%s')", truncated, query)
             products = self._try_search(truncated)
 
+        # Retry: progressively simplify multi-word queries
+        if not products:
+            words = query.split()
+            # Try dropping first word (e.g. "verse zalmfilets op de huid" -> "zalmfilets op de huid")
+            if len(words) >= 2:
+                shorter = " ".join(words[1:])
+                logger.info("Retrying search with '%s' (dropped modifier from '%s')", shorter, query)
+                products = self._try_search(shorter)
+            # Try just the first content word (e.g. "zalmfilets op de huid" -> "zalmfilets")
+            if not products and len(words) >= 2:
+                first_word = words[0] if len(words[0]) > len(words[-1]) else words[-1]
+                logger.info("Retrying search with '%s' (longest word from '%s')", first_word, query)
+                products = self._try_search(first_word)
+
         logger.info("Search '%s' -> %d products", query, len(products))
         if products:
             top = products[0]

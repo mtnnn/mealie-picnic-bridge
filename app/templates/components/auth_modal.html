@@ -1,0 +1,44 @@
+<div class="modal-overlay" id="authModal">
+    <div class="modal">
+        <div class="modal-logo">
+            <div class="brand">picnic</div>
+            <div class="subtitle">Connect your Picnic account</div>
+        </div>
+
+        <div class="steps-indicator">
+            <div class="step-dot active" id="stepDot1">1</div>
+            <div class="step-line" id="stepLine"></div>
+            <div class="step-dot inactive" id="stepDot2">2</div>
+        </div>
+
+        <!-- Step 1: Request SMS -->
+        <div class="modal-step active" id="authStep1">
+            <h4>Request verification code</h4>
+            <p>We'll send an SMS code to your registered phone number</p>
+            <button class="modal-btn" id="sendCodeBtn" onclick="requestSmsCode()">Send SMS Code</button>
+        </div>
+
+        <!-- Step 2: Enter code -->
+        <div class="modal-step" id="authStep2">
+            <h4>Enter verification code</h4>
+            <p>Enter the 6-digit code sent to your phone</p>
+            <div class="code-inputs" id="codeInputs">
+                <input class="code-input" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]" autocomplete="one-time-code">
+                <input class="code-input" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input class="code-input" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input class="code-input" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input class="code-input" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+                <input class="code-input" type="text" maxlength="1" inputmode="numeric" pattern="[0-9]">
+            </div>
+            <button class="modal-btn" id="verifyBtn" onclick="verifyCode()">Verify & Connect</button>
+        </div>
+
+        <!-- Success state -->
+        <div class="modal-success" id="authSuccess">
+            <div class="checkmark">&#10003;</div>
+            <p>Connected!</p>
+        </div>
+
+        <div class="modal-message" id="authMessage"></div>
+    </div>
+</div>

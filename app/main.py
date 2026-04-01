@@ -1,12 +1,17 @@
 import asyncio
+import json
 import logging
 import random
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from app import models
 from app.config import settings
@@ -23,6 +28,8 @@ mealie: MealieClient
 picnic: PicnicClient
 llm_matcher: LLMMatcher | None = None
 
+APP_DIR = Path(__file__).parent
+
 
 @dataclass
 class PendingItem:
@@ -32,8 +39,10 @@ class PendingItem:
     quantity: int
     raw_quantity: float | None = None
     unit_name: str | None = None
+    index: int = 0
     matched_product: dict | None = field(default=None, init=False)
     llm_matched: bool = field(default=False, init=False)
+    llm_quantity: int | None = field(default=None, init=False)
 
 
 @asynccontextmanager
@@ -62,139 +71,36 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Mealie Picnic Bridge", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
+templates = Jinja2Templates(directory=APP_DIR / "templates")
 
 
-INDEX_HTML = """<!DOCTYPE html>
-<html lang="nl">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Mealie Picnic Bridge</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
-        h1 { margin-bottom: 1.5rem; }
-        button { background: #4CAF50; color: white; border: none; padding: 12px 24px; font-size: 1.1rem; border-radius: 6px; cursor: pointer; }
-        button:hover { background: #45a049; }
-        button:disabled { background: #ccc; cursor: wait; }
-        #status { margin-top: 1.5rem; }
-        .result { background: #f5f5f5; border-radius: 6px; padding: 1rem; margin-top: 1rem; }
-        .item { padding: 4px 0; border-bottom: 1px solid #eee; }
-        .matched { color: #2e7d32; }
-        .llm_matched { color: #6a1b9a; }
-        .cached { color: #1565c0; }
-        .no_match { color: #f57f17; }
-        .error { color: #c62828; }
-    </style>
-</head>
-<body>
-    <h1>Mealie Picnic Bridge</h1>
-    <button id="syncBtn" onclick="doSync()">Sync naar Picnic</button>
-    <label style="margin-left:1rem"><input type="checkbox" id="skipCache"> Cache overslaan</label>
-    <div id="status"></div>
-
-    <script>
-        async function doSync() {
-            const btn = document.getElementById('syncBtn');
-            const status = document.getElementById('status');
-            btn.disabled = true;
-            btn.textContent = 'Bezig met sync...';
-            status.innerHTML = '';
-            try {
-                const skip = document.getElementById('skipCache').checked;
-                const url = skip ? '/sync?skip_cache=true' : '/sync';
-                const resp = await fetch(url, { method: 'POST' });
-                const data = await resp.json();
-                renderResult(data);
-            } catch (e) {
-                status.innerHTML = '<div class="result error">Fout: ' + e.message + '</div>';
-            } finally {
-                btn.disabled = false;
-                btn.textContent = 'Sync naar Picnic';
-            }
-        }
-
-        function renderResult(data) {
-            const status = document.getElementById('status');
-            let html = '<div class="result">';
-            html += '<strong>' + data.timestamp + '</strong><br>';
-            html += 'Totaal: ' + data.total_items + ' | Toegevoegd: ' + data.added_to_cart;
-            html += ' | Geen match: ' + data.no_match + ' | Fouten: ' + data.errors + '<br><br>';
-            for (const item of data.items) {
-                html += '<div class="item ' + item.status + '">';
-                html += item.name + ' &rarr; ';
-                if (item.picnic_product_name) {
-                    html += item.picnic_product_name;
-                    if (item.score) html += ' (' + Math.round(item.score) + '%)';
-                } else if (item.error) {
-                    html += item.error;
-                } else {
-                    html += 'geen match';
-                }
-                html += '</div>';
-            }
-            html += '</div>';
-            status.innerHTML = html;
-        }
-
-        // Load last status on page load
-        fetch('/status').then(r => r.json()).then(data => {
-            if (data.last_sync) renderResult(data.last_sync);
-        });
-    </script>
-</body>
-</html>"""
+# === Pages ===
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
-    return INDEX_HTML
+async def index(request: Request):
+    return templates.TemplateResponse(request, "index.html")
 
 
-@app.get("/status")
-async def status():
-    return {"last_sync": models.last_sync_result}
+# === API: Auth ===
+
+
+@app.get("/auth/status")
+async def auth_status():
+    return {
+        "needs_2fa": picnic.needs_2fa,
+        "authenticated": not picnic.needs_2fa and bool(picnic.auth_token),
+    }
 
 
 @app.get("/auth", response_class=HTMLResponse)
 async def auth_page():
-    if not picnic.needs_2fa:
-        return HTMLResponse("<h3>Already authenticated</h3><p>Auth token: <code>"
-                            + picnic.auth_token[:12] + "...</code></p>"
-                            "<p><a href='/'>Back</a></p>")
-    return HTMLResponse("""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Picnic 2FA</title>
-<style>body{font-family:system-ui;max-width:400px;margin:2rem auto;padding:0 1rem}
-input,button{padding:10px 16px;font-size:1rem;border-radius:6px;border:1px solid #ccc;margin:4px}
-button{background:#4CAF50;color:white;border:none;cursor:pointer}
-#msg{margin-top:1rem;padding:8px;border-radius:4px}</style></head>
-<body>
-<h2>Picnic 2FA</h2>
-<p>Step 1: Request SMS code</p>
-<button onclick="requestCode()">Stuur SMS code</button>
-<p style="margin-top:1rem">Step 2: Enter the code</p>
-<input id="code" placeholder="123456" maxlength="6">
-<button onclick="verifyCode()">Verifieer</button>
-<div id="msg"></div>
-<script>
-const msg = document.getElementById('msg');
-async function requestCode() {
-    msg.textContent = 'Sending...';
-    const r = await fetch('/auth/request-code', {method:'POST'});
-    const d = await r.json();
-    msg.textContent = d.ok ? 'SMS verstuurd!' : 'Fout: ' + d.error;
-    msg.style.background = d.ok ? '#e8f5e9' : '#ffebee';
-}
-async function verifyCode() {
-    const code = document.getElementById('code').value;
-    if (!code) return;
-    msg.textContent = 'Verifying...';
-    const r = await fetch('/auth/verify', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({code})});
-    const d = await r.json();
-    msg.textContent = d.ok ? 'Authenticated! Token: ' + d.token_preview + ' — Save as PICNIC_AUTH_TOKEN' : 'Fout: ' + d.error;
-    msg.style.background = d.ok ? '#e8f5e9' : '#ffebee';
-}
-</script></body></html>""")
+    """Legacy auth page — redirects to main page which shows the modal."""
+    return HTMLResponse(
+        '<meta http-equiv="refresh" content="0;url=/">'
+        "<p>Redirecting to <a href='/'>home</a>...</p>"
+    )
 
 
 @app.post("/auth/request-code")
@@ -243,113 +149,264 @@ def _save_token_to_env(token: str) -> None:
         logger.warning("Could not save token to .env", exc_info=True)
 
 
+# === API: Shopping Lists ===
+
+
+@app.get("/shopping-lists")
+async def get_shopping_lists():
+    """Return shopping list summaries for the UI."""
+    lists = await mealie.get_shopping_lists()
+    result = []
+    for sl in lists:
+        items = await mealie.get_list_items(sl["id"])
+        result.append({
+            "id": sl["id"],
+            "name": sl.get("name", "Unnamed"),
+            "item_count": len(items),
+        })
+    return result
+
+
+@app.get("/shopping-lists/{list_id}/items")
+async def get_list_items(list_id: str):
+    """Return parsed items for a shopping list."""
+    items = await mealie.get_list_items(list_id)
+    result = []
+    for item in items:
+        food = item.get("food") or {}
+        display = item.get("display", "")
+        note = item.get("note")
+        food_name = food.get("name")
+        raw_quantity = item.get("quantity") or 1
+        unit_obj = item.get("unit") or {}
+        unit_name = unit_obj.get("name") or unit_obj.get("abbreviation") or None
+
+        name = parse_ingredient_name(display, note, food_name)
+        result.append({
+            "name": name,
+            "quantity": raw_quantity,
+            "unit": unit_name,
+        })
+    return result
+
+
+# === API: Sync Status ===
+
+
+@app.get("/status")
+async def status():
+    return {"last_sync": models.last_sync_result}
+
+
+# === API: Sync (original, kept for backward compat) ===
+
+
 @app.post("/sync", response_model=SyncResult)
 async def sync(skip_cache: bool = False):
+    results: list[SyncItemResult] = []
+    async for event_type, data in _sync_generator(skip_cache):
+        if event_type == "item_result":
+            results.append(SyncItemResult(
+                name=data["name"],
+                status=ItemStatus(data["status"]),
+                picnic_product_name=data.get("picnic_product_name"),
+                picnic_product_id=data.get("picnic_product_id"),
+                score=data.get("score"),
+                error=data.get("error"),
+            ))
+        elif event_type == "sync_complete":
+            result = SyncResult(
+                timestamp=datetime.now(),
+                total_items=data["total_items"],
+                added_to_cart=data["added_to_cart"],
+                no_match=data["no_match"],
+                errors=data["errors"],
+                items=results,
+            )
+            models.last_sync_result = result
+            return result
+
+    # Fallback if generator ends without sync_complete
+    result = SyncResult(
+        timestamp=datetime.now(),
+        total_items=len(results),
+        added_to_cart=sum(1 for r in results if r.status in (ItemStatus.matched, ItemStatus.llm_matched, ItemStatus.cached)),
+        no_match=sum(1 for r in results if r.status == ItemStatus.no_match),
+        errors=sum(1 for r in results if r.status == ItemStatus.error),
+        items=results,
+    )
+    models.last_sync_result = result
+    return result
+
+
+# === API: Sync Stream (SSE) ===
+
+_sync_cancel: asyncio.Event | None = None
+
+
+@app.post("/sync/stream")
+async def sync_stream(skip_cache: bool = False):
+    global _sync_cancel
+    _sync_cancel = asyncio.Event()
+    cancel = _sync_cancel
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        async for event_type, data in _sync_generator(skip_cache, cancel):
+            yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/sync/stop")
+async def sync_stop():
+    if _sync_cancel is not None:
+        _sync_cancel.set()
+        return {"ok": True}
+    return {"ok": False, "error": "No sync in progress"}
+
+
+# === Sync Generator (shared logic) ===
+
+
+async def _sync_generator(
+    skip_cache: bool = False,
+    cancel: asyncio.Event | None = None,
+) -> AsyncGenerator[tuple[str, dict], None]:
+    """Core sync logic as an async generator yielding (event_type, data) tuples."""
     items_results: list[SyncItemResult] = []
     added = 0
     no_match_count = 0
     error_count = 0
     pending: list[PendingItem] = []
+    item_index = 0
 
     shopping_lists = await mealie.get_shopping_lists()
     logger.info("Found %d shopping lists", len(shopping_lists))
 
-    # --- Phase 1: Collect --- Handle cached items, search Picnic for the rest
+    # Pre-scan to collect all items for sync_start event
+    all_items_info = []
+    all_raw_items = []
     for sl in shopping_lists:
         list_items = await mealie.get_list_items(sl["id"])
-        if not list_items:
-            continue
-
-        logger.info("Processing list '%s' with %d items", sl.get("name", "?"), len(list_items))
-
         for item in list_items:
             food = item.get("food") or {}
-            food_name = food.get("name")
             display = item.get("display", "")
             note = item.get("note")
+            food_name = food.get("name")
             raw_quantity = item.get("quantity") or 1
             unit_obj = item.get("unit") or {}
             unit_name = unit_obj.get("name") or unit_obj.get("abbreviation") or None
-
-            # Cart count: only use raw quantity when there's no unit (meaning
-            # "3 tomatoes" = 3 items). When a unit like g/ml/cup is present
-            # (e.g. "500 gram"), the cart count is always 1.
-            if unit_name:
-                quantity = 1
-            else:
-                quantity = max(1, round(raw_quantity))
-
             ingredient_name = parse_ingredient_name(display, note, food_name)
 
-            try:
-                # Check cache in food.extras
-                extras = food.get("extras") or {}
-                cached_id = extras.get("picnic_product_id")
-                cached_name = extras.get("picnic_product_name")
+            all_items_info.append({
+                "name": ingredient_name,
+                "quantity": raw_quantity,
+                "unit": unit_name,
+            })
+            all_raw_items.append((item, ingredient_name, food, raw_quantity, unit_name))
 
-                if cached_id and not skip_cache:
-                    await asyncio.to_thread(
-                        picnic.add_to_cart, cached_id, quantity
-                    )
-                    await asyncio.sleep(random.uniform(10, 25))
-                    items_results.append(
-                        SyncItemResult(
-                            name=ingredient_name,
-                            status=ItemStatus.cached,
-                            picnic_product_id=cached_id,
-                            picnic_product_name=cached_name,
-                        )
-                    )
-                    added += 1
-                    continue
+    # Emit sync_start
+    yield "sync_start", {
+        "total_items": len(all_raw_items),
+        "lists": [sl.get("name", "?") for sl in shopping_lists],
+        "items": all_items_info,
+    }
 
-                # Search Picnic
+    # --- Phase 1: Collect ---
+    for raw_item, ingredient_name, food, raw_quantity, unit_name in all_raw_items:
+        if cancel and cancel.is_set():
+            yield "sync_cancelled", {}
+            return
+
+        if unit_name:
+            quantity = 1
+        else:
+            quantity = max(1, round(raw_quantity))
+
+        yield "item_start", {"name": ingredient_name, "index": item_index, "phase": "searching"}
+
+        try:
+            extras = food.get("extras") or {}
+            cached_id = extras.get("picnic_product_id")
+            cached_name = extras.get("picnic_product_name")
+
+            if cached_id and not skip_cache:
+                await asyncio.to_thread(picnic.add_to_cart, cached_id, quantity)
                 await asyncio.sleep(random.uniform(10, 25))
-                products = await asyncio.to_thread(
-                    picnic.search, ingredient_name
-                )
+                yield "item_result", {
+                    "name": ingredient_name,
+                    "index": item_index,
+                    "status": "cached",
+                    "picnic_product_id": cached_id,
+                    "picnic_product_name": cached_name,
+                }
+                items_results.append(SyncItemResult(
+                    name=ingredient_name, status=ItemStatus.cached,
+                    picnic_product_id=cached_id, picnic_product_name=cached_name,
+                ))
+                added += 1
+                item_index += 1
+                continue
 
-                if not products:
-                    items_results.append(
-                        SyncItemResult(
-                            name=ingredient_name,
-                            status=ItemStatus.no_match,
-                        )
-                    )
-                    no_match_count += 1
-                    continue
+            await asyncio.sleep(random.uniform(10, 25))
+            products = await asyncio.to_thread(picnic.search, ingredient_name)
 
-                pending.append(
-                    PendingItem(
-                        ingredient_name=ingredient_name,
-                        products=products,
-                        food=food,
-                        quantity=quantity,
-                        raw_quantity=raw_quantity,
-                        unit_name=unit_name,
-                    )
-                )
+            if not products:
+                yield "item_result", {
+                    "name": ingredient_name,
+                    "index": item_index,
+                    "status": "no_match",
+                }
+                items_results.append(SyncItemResult(
+                    name=ingredient_name, status=ItemStatus.no_match,
+                ))
+                no_match_count += 1
+                item_index += 1
+                continue
 
-            except Exception as exc:
-                logger.exception("Error collecting item '%s'", ingredient_name)
-                items_results.append(
-                    SyncItemResult(
-                        name=ingredient_name,
-                        status=ItemStatus.error,
-                        error=str(exc),
-                    )
-                )
-                error_count += 1
+            pending.append(PendingItem(
+                ingredient_name=ingredient_name,
+                products=products,
+                food=food,
+                quantity=quantity,
+                raw_quantity=raw_quantity,
+                unit_name=unit_name,
+                index=item_index,
+            ))
 
-    # --- Phase 2: Match --- LLM batch or fuzzy per-item
+        except Exception as exc:
+            logger.exception("Error collecting item '%s'", ingredient_name)
+            yield "item_result", {
+                "name": ingredient_name,
+                "index": item_index,
+                "status": "error",
+                "error": str(exc),
+            }
+            items_results.append(SyncItemResult(
+                name=ingredient_name, status=ItemStatus.error, error=str(exc),
+            ))
+            error_count += 1
+
+        item_index += 1
+
+    # --- Phase 2: Match ---
+    for p in pending:
+        yield "item_start", {"name": p.ingredient_name, "index": p.index, "phase": "matching"}
+
     if pending and llm_matcher:
         try:
             requests = [
                 MatchRequest(
-                    p.ingredient_name,
-                    p.products,
-                    quantity=p.raw_quantity,
-                    unit=p.unit_name,
+                    p.ingredient_name, p.products,
+                    quantity=p.raw_quantity, unit=p.unit_name,
                 )
                 for p in pending
             ]
@@ -357,8 +414,9 @@ async def sync(skip_cache: bool = False):
             for p, result in zip(pending, llm_results):
                 p.matched_product = result.selected_product
                 p.llm_matched = result.selected_product is not None
+                p.llm_quantity = result.recommended_quantity
         except Exception:
-            logger.warning("LLM matching failed, falling back to fuzzy matching")
+            logger.warning("LLM matching failed, falling back to fuzzy matching", exc_info=True)
             for p in pending:
                 match = find_best_match(
                     p.ingredient_name, p.products, settings.FUZZY_THRESHOLD
@@ -371,65 +429,78 @@ async def sync(skip_cache: bool = False):
             )
             p.matched_product = match[0] if match else None
 
-    # --- Phase 3: Process --- Add to cart, cache, build results
+    # --- Phase 3: Process ---
     for p in pending:
+        if cancel and cancel.is_set():
+            yield "sync_cancelled", {}
+            return
+
         try:
             if p.matched_product is None:
-                items_results.append(
-                    SyncItemResult(
-                        name=p.ingredient_name,
-                        status=ItemStatus.no_match,
-                    )
-                )
+                yield "item_result", {
+                    "name": p.ingredient_name,
+                    "index": p.index,
+                    "status": "no_match",
+                }
+                items_results.append(SyncItemResult(
+                    name=p.ingredient_name, status=ItemStatus.no_match,
+                ))
                 no_match_count += 1
                 continue
 
             product_id = str(p.matched_product["id"])
             product_name = p.matched_product.get("name", "")
 
-            # Cache in Mealie food extras
             if p.food.get("id"):
                 await mealie.update_food_extras(
                     p.food["id"],
-                    {
-                        "picnic_product_id": product_id,
-                        "picnic_product_name": product_name,
-                    },
+                    {"picnic_product_id": product_id, "picnic_product_name": product_name},
                 )
 
-            # Add to Picnic cart
-            await asyncio.to_thread(
-                picnic.add_to_cart, product_id, p.quantity
-            )
+            cart_qty = p.llm_quantity if p.llm_quantity is not None else p.quantity
+            await asyncio.to_thread(picnic.add_to_cart, product_id, cart_qty)
             await asyncio.sleep(random.uniform(10, 25))
 
-            status = (
-                ItemStatus.llm_matched if p.llm_matched else ItemStatus.matched
-            )
-            items_results.append(
-                SyncItemResult(
-                    name=p.ingredient_name,
-                    status=status,
-                    picnic_product_id=product_id,
-                    picnic_product_name=product_name,
-                )
-            )
+            item_status = ItemStatus.llm_matched if p.llm_matched else ItemStatus.matched
+            yield "item_result", {
+                "name": p.ingredient_name,
+                "index": p.index,
+                "status": item_status.value,
+                "picnic_product_id": product_id,
+                "picnic_product_name": product_name,
+            }
+            items_results.append(SyncItemResult(
+                name=p.ingredient_name, status=item_status,
+                picnic_product_id=product_id, picnic_product_name=product_name,
+            ))
             added += 1
 
         except Exception as exc:
             logger.exception("Error processing item '%s'", p.ingredient_name)
-            items_results.append(
-                SyncItemResult(
-                    name=p.ingredient_name,
-                    status=ItemStatus.error,
-                    error=str(exc),
-                )
-            )
+            yield "item_result", {
+                "name": p.ingredient_name,
+                "index": p.index,
+                "status": "error",
+                "error": str(exc),
+            }
+            items_results.append(SyncItemResult(
+                name=p.ingredient_name, status=ItemStatus.error, error=str(exc),
+            ))
             error_count += 1
 
+    # Emit sync_complete
+    total = len(items_results)
+    yield "sync_complete", {
+        "total_items": total,
+        "added_to_cart": added,
+        "no_match": no_match_count,
+        "errors": error_count,
+    }
+
+    # Store last result
     result = SyncResult(
         timestamp=datetime.now(),
-        total_items=len(items_results),
+        total_items=total,
         added_to_cart=added,
         no_match=no_match_count,
         errors=error_count,
@@ -438,9 +509,5 @@ async def sync(skip_cache: bool = False):
     models.last_sync_result = result
     logger.info(
         "Sync complete: %d items, %d added, %d no match, %d errors",
-        result.total_items,
-        result.added_to_cart,
-        result.no_match,
-        result.errors,
+        total, added, no_match_count, error_count,
     )
-    return result
