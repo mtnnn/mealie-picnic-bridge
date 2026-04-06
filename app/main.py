@@ -468,11 +468,6 @@ async def _match_generator(
             yield "match_cancelled", {}
             return
 
-        if unit_name:
-            quantity = 1
-        else:
-            quantity = max(1, round(raw_quantity))
-
         yield "item_start", {"name": ingredient_name, "index": item_index, "phase": "searching"}
 
         try:
@@ -482,6 +477,9 @@ async def _match_generator(
             cached_image = extras.get("picnic_image_id")
 
             if cached_id and not skip_cache:
+                # Cached items: use stored quantity or default to 1.
+                # The LLM already determined the right quantity when first matched.
+                cached_qty = extras.get("picnic_quantity", 1)
                 yield "item_result", {
                     "name": ingredient_name,
                     "index": item_index,
@@ -490,7 +488,7 @@ async def _match_generator(
                     "picnic_product_name": cached_name,
                     "food_id": food.get("id"),
                     "image_url": _picnic_image_url(cached_image),
-                    "quantity": quantity,
+                    "quantity": cached_qty,
                 }
                 matched_count += 1
                 item_index += 1
@@ -514,7 +512,7 @@ async def _match_generator(
                 ingredient_name=ingredient_name,
                 products=products,
                 food=food,
-                quantity=quantity,
+                quantity=1,  # default; LLM matcher will determine actual quantity
                 raw_quantity=raw_quantity,
                 unit_name=unit_name,
                 index=item_index,
@@ -590,9 +588,13 @@ async def _match_generator(
         image_url = _picnic_image_url(p.matched_product.get("image_id"))
         cart_qty = p.llm_quantity if p.llm_quantity is not None else p.quantity
 
-        # Save match to Mealie food extras
+        # Save match to Mealie food extras (including quantity for future cached lookups)
         if p.food.get("id"):
-            extras_update = {"picnic_product_id": product_id, "picnic_product_name": product_name}
+            extras_update = {
+                "picnic_product_id": product_id,
+                "picnic_product_name": product_name,
+                "picnic_quantity": cart_qty,
+            }
             if p.matched_product.get("image_id"):
                 extras_update["picnic_image_id"] = p.matched_product["image_id"]
             await mealie.update_food_extras(p.food["id"], extras_update)
