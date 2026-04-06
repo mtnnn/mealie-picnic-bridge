@@ -442,19 +442,24 @@ async def _match_generator(
         for item in list_items:
             food = item.get("food") or {}
             display = item.get("display", "")
-            note = item.get("note")
+            note = item.get("note") or ""
             food_name = food.get("name")
             raw_quantity = item.get("quantity") or 1
             unit_obj = item.get("unit") or {}
             unit_name = unit_obj.get("name") or unit_obj.get("abbreviation") or None
             ingredient_name = parse_ingredient_name(display, note, food_name)
 
+            # Include note in ingredient name for better matching
+            # e.g. "Mozzarella" + note "Geraspt" → "Mozzarella Geraspt"
+            if note and note.lower() not in ingredient_name.lower():
+                ingredient_name = f"{ingredient_name} {note}"
+
             all_items_info.append({
                 "name": ingredient_name,
                 "quantity": raw_quantity,
                 "unit": unit_name,
             })
-            all_raw_items.append((item, ingredient_name, food, raw_quantity, unit_name))
+            all_raw_items.append((item, ingredient_name, food, raw_quantity, unit_name, note))
 
     yield "match_start", {
         "total_items": len(all_raw_items),
@@ -463,7 +468,7 @@ async def _match_generator(
     }
 
     # --- Phase 1: Search ---
-    for raw_item, ingredient_name, food, raw_quantity, unit_name in all_raw_items:
+    for raw_item, ingredient_name, food, raw_quantity, unit_name, note in all_raw_items:
         if cancel and cancel.is_set():
             yield "match_cancelled", {}
             return
@@ -476,7 +481,10 @@ async def _match_generator(
             cached_name = extras.get("picnic_product_name")
             cached_image = extras.get("picnic_image_id")
 
-            if cached_id and not skip_cache:
+            # Skip cache when item has a note (variant info like "Geraspt")
+            # because the same food may need different products per recipe
+            use_cache = cached_id and not skip_cache and not note
+            if use_cache:
                 # Cached items: use stored quantity or default to 1.
                 # The LLM already determined the right quantity when first matched.
                 cached_qty = extras.get("picnic_quantity", 1)
