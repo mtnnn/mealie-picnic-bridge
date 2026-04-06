@@ -30,7 +30,11 @@ van het gekozen product.
 (één blikje bevat genoeg ansjovisfilets)
 - Voorbeeld: recept vraagt "6 uien", product is "Uien 1 stuk" → quantity = 6
 - Voorbeeld: recept vraagt "1 kg aardappelen", product is "Aardappelen 500g" → quantity = 2
-- Bij twijfel, kies liever 1 te veel dan te weinig.
+- KRITIEK: Als een product GEEN unit_quantity heeft (dus verpakkingsgrootte onbekend), \
+gebruik dan altijd quantity = 1. Gokt NOOIT een hoeveelheid op basis van een onbekende \
+verpakkingsgrootte.
+- Als de amount in gram/ml/kg/liter is, is de quantity bijna altijd 1 \
+(je koopt één verpakking, niet meerdere).
 - Als er geen amount is opgegeven, gebruik quantity = 1.\
 """
 

@@ -18,5 +18,9 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "claude-haiku-4-5-20251001"
     LLM_MAX_PRODUCTS_PER_ITEM: int = 15
 
+    # Recipe photo audit (optional)
+    OPENAI_API_KEY: str = ""
+    BRAVE_API_KEY: str = ""
+
 
 settings = Settings()

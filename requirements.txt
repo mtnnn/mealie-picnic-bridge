@@ -6,3 +6,4 @@ ingredient-parser-nlp>=0.1
 rapidfuzz>=3.6
 pydantic-settings>=2.1
 anthropic>=0.43
+openai>=1.0

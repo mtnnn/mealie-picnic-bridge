@@ -19,17 +19,21 @@ async function checkAuthStatus() {
         const data = await resp.json();
         const dot = document.getElementById('statusDot');
         const text = document.getElementById('statusText');
+        const authBtn = document.getElementById('authBtn');
         if (data.needs_2fa) {
             dot.classList.add('needs-auth');
             text.textContent = '2FA Required';
+            authBtn.style.display = '';
             openAuthModal();
         } else {
             dot.classList.remove('needs-auth');
             text.textContent = 'Connected';
+            authBtn.style.display = 'none';
         }
     } catch {
         document.getElementById('statusDot').classList.add('needs-auth');
         document.getElementById('statusText').textContent = 'Disconnected';
+        document.getElementById('authBtn').style.display = '';
     }
 }
 
@@ -139,7 +143,7 @@ function renderSyncResults(result) {
 
         // Cart panel item (only for successful matches)
         if (isSuccess && item.picnic_product_name) {
-            addCartItem(item);
+            addCartItem({ ...item, name: item.name });
         }
     });
 
@@ -343,18 +347,53 @@ function finishSync() {
     }, 3000);
 }
 
+// === Delete Cache ===
+async function deleteCache() {
+    if (!confirm('Weet je zeker dat je alle opgeslagen Picnic product-koppelingen wilt verwijderen?')) return;
+
+    const btn = document.getElementById('deleteCacheBtn');
+    btn.disabled = true;
+    btn.textContent = 'Deleting...';
+
+    try {
+        const resp = await fetch('/cache', { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.ok) {
+            btn.textContent = `${data.cleared} cleared`;
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Delete cache';
+            }, 2000);
+        } else {
+            btn.textContent = 'Error';
+            btn.disabled = false;
+        }
+    } catch (err) {
+        btn.textContent = 'Error';
+        btn.disabled = false;
+        console.error('Delete cache error:', err);
+    }
+}
+
 // === Cart Helpers ===
 function addCartItem(data) {
     const cartList = document.getElementById('cartList');
 
     const div = document.createElement('div');
     div.className = 'item in-cart';
+    if (data.food_id) div.dataset.foodId = data.food_id;
+    if (data.name) div.dataset.ingredientName = data.name;
 
-    const info = document.createElement('div');
+    const itemInfo = document.createElement('div');
+    itemInfo.className = 'cart-item-info';
+
+    const text = document.createElement('div');
+    text.className = 'cart-item-text';
+
     const name = document.createElement('div');
     name.className = 'item-name';
     name.textContent = data.picnic_product_name;
-    info.appendChild(name);
+    text.appendChild(name);
 
     const meta = document.createElement('div');
     meta.className = 'item-meta';
@@ -362,13 +401,27 @@ function addCartItem(data) {
     if (data.score) parts.push(Math.round(data.score) + '% match');
     else parts.push(data.status.replace('_', ' '));
     meta.textContent = parts.join(' ');
-    info.appendChild(meta);
+    text.appendChild(meta);
+
+    itemInfo.appendChild(text);
+
+    if (data.food_id) {
+        const changeBtn = document.createElement('button');
+        changeBtn.className = 'change-product-btn';
+        changeBtn.textContent = 'wijzig';
+        changeBtn.title = 'Andere variant kiezen';
+        changeBtn.onclick = (e) => {
+            e.stopPropagation();
+            openProductModal(data.food_id, data.name || data.picnic_product_name, div);
+        };
+        itemInfo.appendChild(changeBtn);
+    }
 
     const status = document.createElement('span');
     status.className = 'item-status';
     status.innerHTML = '&#10003; Added';
 
-    div.appendChild(info);
+    div.appendChild(itemInfo);
     div.appendChild(status);
     cartList.appendChild(div);
 
@@ -503,6 +556,7 @@ async function verifyCode() {
             // Update navbar status
             document.getElementById('statusDot').classList.remove('needs-auth');
             document.getElementById('statusText').textContent = 'Connected';
+            document.getElementById('authBtn').style.display = 'none';
 
             // Auto-close modal
             setTimeout(closeAuthModal, 2000);
@@ -567,5 +621,118 @@ function setupCodeInputs() {
 document.addEventListener('click', (e) => {
     if (e.target.classList.contains('modal-overlay')) {
         closeAuthModal();
+        closeProductModal();
     }
 });
+
+// === Product Search Modal ===
+let _productModalFoodId = null;
+let _productModalCartItem = null;
+let _productSearchTimeout = null;
+
+function openProductModal(foodId, ingredientName, cartItemEl) {
+    _productModalFoodId = foodId;
+    _productModalCartItem = cartItemEl;
+
+    document.getElementById('productModalIngredient').textContent = ingredientName || '';
+    document.getElementById('productSearchInput').value = ingredientName || '';
+    document.getElementById('productResults').innerHTML = '<div class="product-search-empty">Typ om te zoeken</div>';
+    document.getElementById('productModal').classList.add('visible');
+
+    const input = document.getElementById('productSearchInput');
+    input.focus();
+    input.select();
+
+    // Auto-search with the ingredient name
+    if (ingredientName) {
+        searchPicnicProducts(ingredientName);
+    }
+}
+
+function closeProductModal() {
+    document.getElementById('productModal').classList.remove('visible');
+    _productModalFoodId = null;
+    _productModalCartItem = null;
+    if (_productSearchTimeout) clearTimeout(_productSearchTimeout);
+}
+
+function onProductSearchInput() {
+    if (_productSearchTimeout) clearTimeout(_productSearchTimeout);
+    _productSearchTimeout = setTimeout(() => {
+        const q = document.getElementById('productSearchInput').value.trim();
+        if (q.length >= 2) searchPicnicProducts(q);
+    }, 400);
+}
+
+async function searchPicnicProducts(query) {
+    const resultsEl = document.getElementById('productResults');
+    resultsEl.innerHTML = '<div class="product-search-spinner"><div class="spinner-large"></div></div>';
+
+    try {
+        const resp = await fetch('/picnic/search?q=' + encodeURIComponent(query));
+        const products = await resp.json();
+
+        if (!products.length) {
+            resultsEl.innerHTML = '<div class="product-search-empty">Geen producten gevonden</div>';
+            return;
+        }
+
+        resultsEl.innerHTML = '';
+        products.forEach(product => {
+            const item = document.createElement('div');
+            item.className = 'product-result-item';
+            item.onclick = () => selectProduct(product);
+
+            const left = document.createElement('div');
+
+            const name = document.createElement('div');
+            name.className = 'product-result-name';
+            name.textContent = product.name;
+            left.appendChild(name);
+
+            if (product.unit_quantity) {
+                const meta = document.createElement('div');
+                meta.className = 'product-result-meta';
+                meta.textContent = product.unit_quantity;
+                left.appendChild(meta);
+            }
+
+            const price = document.createElement('div');
+            price.className = 'product-result-price';
+            if (product.display_price) {
+                price.textContent = '€' + (product.display_price / 100).toFixed(2);
+            }
+
+            item.appendChild(left);
+            item.appendChild(price);
+            resultsEl.appendChild(item);
+        });
+    } catch (err) {
+        resultsEl.innerHTML = '<div class="product-search-empty">Fout bij zoeken: ' + err.message + '</div>';
+    }
+}
+
+async function selectProduct(product) {
+    if (!_productModalFoodId) return;
+
+    try {
+        await fetch('/foods/' + _productModalFoodId + '/product', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ product_id: product.id, product_name: product.name }),
+        });
+
+        // Update the cart item display
+        if (_productModalCartItem) {
+            const nameEl = _productModalCartItem.querySelector('.item-name');
+            if (nameEl) nameEl.textContent = product.name;
+
+            const metaEl = _productModalCartItem.querySelector('.item-meta');
+            if (metaEl) metaEl.textContent = 'handmatig gekozen';
+        }
+
+        closeProductModal();
+    } catch (err) {
+        alert('Opslaan mislukt: ' + err.message);
+    }
+}

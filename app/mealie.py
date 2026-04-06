@@ -40,6 +40,68 @@ class MealieClient:
         resp.raise_for_status()
         return resp.json().get("listItems", [])
 
+    async def get_all_recipes(self) -> list[dict]:
+        recipes: list[dict] = []
+        page = 1
+        while True:
+            resp = await self.client.get(
+                "/api/recipes",
+                params={"page": page, "perPage": 50},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            recipes.extend(data.get("items", []))
+            if page >= data.get("totalPages", 1):
+                break
+            page += 1
+        return recipes
+
+    async def get_recipe(self, slug: str) -> dict:
+        resp = await self.client.get(f"/api/recipes/{slug}")
+        resp.raise_for_status()
+        return resp.json()
+
+    async def upload_recipe_image(
+        self, slug: str, image_bytes: bytes, extension: str
+    ) -> None:
+        resp = await self.client.put(
+            f"/api/recipes/{slug}/image",
+            files={"image": (f"image.{extension}", image_bytes, "image/jpeg" if extension == "jpg" else f"image/{extension}")},
+            data={"extension": extension},
+        )
+        resp.raise_for_status()
+        logger.info("Uploaded image to recipe %s", slug)
+
+    async def get_all_foods(self) -> list[dict]:
+        foods: list[dict] = []
+        page = 1
+        while True:
+            resp = await self.client.get(
+                "/api/foods",
+                params={"page": page, "perPage": 50},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            foods.extend(data.get("items", []))
+            if page >= data.get("totalPages", 1):
+                break
+            page += 1
+        return foods
+
+    async def clear_food_picnic_cache(self, food_id: str, food: dict) -> bool:
+        """Remove picnic_product_id/name from a food's extras. Returns True if changed."""
+        extras = food.get("extras") or {}
+        if "picnic_product_id" not in extras and "picnic_product_name" not in extras:
+            return False
+        extras.pop("picnic_product_id", None)
+        extras.pop("picnic_product_name", None)
+        resp = await self.client.put(
+            f"/api/foods/{food_id}",
+            json={**food, "extras": extras},
+        )
+        resp.raise_for_status()
+        return True
+
     async def update_food_extras(
         self, food_id: str, extras: dict
     ) -> None:

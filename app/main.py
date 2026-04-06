@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -20,13 +20,22 @@ from app.matcher import find_best_match, parse_ingredient_name
 from app.mealie import MealieClient
 from app.models import ItemStatus, SyncItemResult, SyncResult
 from app.picnic_client import PicnicClient
+from app.recipe_auditor import RecipeAuditor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Units that represent weight/volume — when amount is in these units,
+# quantity is almost always 1 (one package)
+_WEIGHT_VOLUME_UNITS = {
+    "gram", "g", "gr", "kg", "kilogram",
+    "ml", "milliliter", "liter", "l", "cl", "dl",
+}
+
 mealie: MealieClient
 picnic: PicnicClient
 llm_matcher: LLMMatcher | None = None
+recipe_auditor: RecipeAuditor
 
 APP_DIR = Path(__file__).parent
 
@@ -47,13 +56,19 @@ class PendingItem:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global mealie, picnic, llm_matcher
+    global mealie, picnic, llm_matcher, recipe_auditor
     mealie = MealieClient(settings.MEALIE_HOST, settings.MEALIE_TOKEN)
     picnic = PicnicClient(
         username=settings.PICNIC_USERNAME,
         password=settings.PICNIC_PASSWORD,
         country_code=settings.PICNIC_COUNTRY_CODE,
         auth_token=settings.PICNIC_AUTH_TOKEN,
+    )
+    recipe_auditor = RecipeAuditor(
+        mealie=mealie,
+        mealie_host=settings.MEALIE_HOST,
+        openai_api_key=settings.OPENAI_API_KEY,
+        brave_api_key=settings.BRAVE_API_KEY,
     )
     if settings.LLM_MATCHING_ENABLED and settings.ANTHROPIC_API_KEY:
         llm_matcher = LLMMatcher(
@@ -67,12 +82,18 @@ async def lifespan(app: FastAPI):
     logger.info("Clients initialized")
     yield
     picnic.close()
+    await recipe_auditor.close()
     await mealie.close()
 
 
 app = FastAPI(title="Mealie Picnic Bridge", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=APP_DIR / "templates")
+
+# Cache-busting: changes on every app restart
+import time as _time
+_cache_bust = str(int(_time.time()))
+templates.env.globals["v"] = _cache_bust
 
 
 # === Pages ===
@@ -81,6 +102,55 @@ templates = Jinja2Templates(directory=APP_DIR / "templates")
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse(request, "index.html")
+
+
+@app.get("/audit", response_class=HTMLResponse)
+async def audit_page(request: Request):
+    return templates.TemplateResponse(request, "audit.html")
+
+
+# === API: Audit ===
+
+
+@app.get("/audit/recipes")
+async def audit_recipes():
+    try:
+        statuses = await recipe_auditor.get_recipe_photo_statuses()
+        return [s.model_dump() for s in statuses]
+    except Exception as exc:
+        logger.exception("Failed to fetch recipe statuses")
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/audit/prompt-template")
+async def audit_prompt_template():
+    """Return the default DALL-E prompt template."""
+    from app.recipe_auditor import DEFAULT_PROMPT_TEMPLATE
+    return {"template": DEFAULT_PROMPT_TEMPLATE}
+
+
+@app.post("/audit/recipes/{slug}/generate")
+async def audit_generate(slug: str, body: dict | None = None):
+    try:
+        prompt_template = (body or {}).get("prompt_template") or None
+        result = await recipe_auditor.search_photos(slug, prompt_template=prompt_template)
+        return result.model_dump()
+    except Exception as exc:
+        logger.exception("Failed to generate photos for %s", slug)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/audit/recipes/{slug}/apply")
+async def audit_apply(slug: str, body: dict):
+    image_url = body.get("image_url")
+    if not image_url:
+        raise HTTPException(status_code=422, detail="image_url is required")
+    try:
+        await recipe_auditor.apply_photo(slug, image_url)
+        return {"ok": True}
+    except Exception as exc:
+        logger.exception("Failed to apply photo for %s", slug)
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 # === API: Auth ===
@@ -190,6 +260,38 @@ async def get_list_items(list_id: str):
     return result
 
 
+# === API: Product Override ===
+
+
+@app.get("/picnic/search")
+async def picnic_search_products(q: str):
+    """Search Picnic for products by query string."""
+    products = await asyncio.to_thread(picnic.search, q)
+    return [
+        {
+            "id": str(p.get("id", "")),
+            "name": p.get("name", ""),
+            "unit_quantity": p.get("unit_quantity", ""),
+            "display_price": p.get("display_price", 0),
+        }
+        for p in products[:20]
+    ]
+
+
+@app.post("/foods/{food_id}/product")
+async def set_food_product(food_id: str, body: dict):
+    """Save a manually chosen Picnic product to Mealie food extras."""
+    product_id = body.get("product_id")
+    product_name = body.get("product_name", "")
+    if not product_id:
+        raise HTTPException(status_code=422, detail="product_id required")
+    await mealie.update_food_extras(
+        food_id,
+        {"picnic_product_id": product_id, "picnic_product_name": product_name},
+    )
+    return {"ok": True}
+
+
 # === API: Sync Status ===
 
 
@@ -199,6 +301,19 @@ async def status():
 
 
 # === API: Sync (original, kept for backward compat) ===
+
+
+@app.delete("/cache")
+async def delete_cache():
+    """Clear all cached Picnic product mappings from Mealie foods."""
+    foods = await mealie.get_all_foods()
+    cleared = 0
+    for food in foods:
+        food_id = food.get("id")
+        if food_id and await mealie.clear_food_picnic_cache(food_id, food):
+            cleared += 1
+    logger.info("Cleared Picnic cache from %d foods", cleared)
+    return {"ok": True, "cleared": cleared}
 
 
 @app.post("/sync", response_model=SyncResult)
@@ -347,10 +462,12 @@ async def _sync_generator(
                     "status": "cached",
                     "picnic_product_id": cached_id,
                     "picnic_product_name": cached_name,
+                    "food_id": food.get("id"),
                 }
                 items_results.append(SyncItemResult(
                     name=ingredient_name, status=ItemStatus.cached,
                     picnic_product_id=cached_id, picnic_product_name=cached_name,
+                    food_id=food.get("id"),
                 ))
                 added += 1
                 item_index += 1
@@ -414,7 +531,17 @@ async def _sync_generator(
             for p, result in zip(pending, llm_results):
                 p.matched_product = result.selected_product
                 p.llm_matched = result.selected_product is not None
-                p.llm_quantity = result.recommended_quantity
+                qty = result.recommended_quantity
+                # Sanity check: weight/volume units should almost never need > 5 packages
+                if (p.unit_name
+                        and p.unit_name.lower() in _WEIGHT_VOLUME_UNITS
+                        and qty > 5):
+                    logger.warning(
+                        "Capping unreasonable llm_quantity %d → 1 for '%s' (unit: %s)",
+                        qty, p.ingredient_name, p.unit_name,
+                    )
+                    qty = 1
+                p.llm_quantity = qty
         except Exception:
             logger.warning("LLM matching failed, falling back to fuzzy matching", exc_info=True)
             for p in pending:
@@ -468,10 +595,12 @@ async def _sync_generator(
                 "status": item_status.value,
                 "picnic_product_id": product_id,
                 "picnic_product_name": product_name,
+                "food_id": p.food.get("id"),
             }
             items_results.append(SyncItemResult(
                 name=p.ingredient_name, status=item_status,
                 picnic_product_id=product_id, picnic_product_name=product_name,
+                food_id=p.food.get("id"),
             ))
             added += 1
 
