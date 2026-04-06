@@ -387,6 +387,15 @@ function addCartItem(data) {
     const itemInfo = document.createElement('div');
     itemInfo.className = 'cart-item-info';
 
+    if (data.image_url) {
+        const thumb = document.createElement('img');
+        thumb.className = 'cart-item-thumb';
+        thumb.src = data.image_url;
+        thumb.alt = data.picnic_product_name;
+        thumb.loading = 'lazy';
+        itemInfo.appendChild(thumb);
+    }
+
     const text = document.createElement('div');
     text.className = 'cart-item-text';
 
@@ -683,7 +692,17 @@ async function searchPicnicProducts(query) {
             item.className = 'product-result-item';
             item.onclick = () => selectProduct(product);
 
+            if (product.image_url) {
+                const thumb = document.createElement('img');
+                thumb.className = 'product-result-thumb';
+                thumb.src = product.image_url;
+                thumb.alt = product.name;
+                thumb.loading = 'lazy';
+                item.appendChild(thumb);
+            }
+
             const left = document.createElement('div');
+            left.className = 'product-result-text';
 
             const name = document.createElement('div');
             name.className = 'product-result-name';

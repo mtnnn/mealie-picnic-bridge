@@ -260,6 +260,15 @@ async def get_list_items(list_id: str):
     return result
 
 
+_PICNIC_IMG_BASE = "https://storefront-prod.nl.picnicinternational.com/static/images"
+
+
+def _picnic_image_url(image_id: str | None, size: str = "small") -> str | None:
+    if not image_id:
+        return None
+    return f"{_PICNIC_IMG_BASE}/{image_id}/{size}.png"
+
+
 # === API: Product Override ===
 
 
@@ -273,6 +282,7 @@ async def picnic_search_products(q: str):
             "name": p.get("name", ""),
             "unit_quantity": p.get("unit_quantity", ""),
             "display_price": p.get("display_price", 0),
+            "image_url": _picnic_image_url(p.get("image_id")),
         }
         for p in products[:20]
     ]
@@ -452,6 +462,7 @@ async def _sync_generator(
             extras = food.get("extras") or {}
             cached_id = extras.get("picnic_product_id")
             cached_name = extras.get("picnic_product_name")
+            cached_image = extras.get("picnic_image_id")
 
             if cached_id and not skip_cache:
                 await asyncio.to_thread(picnic.add_to_cart, cached_id, quantity)
@@ -463,6 +474,7 @@ async def _sync_generator(
                     "picnic_product_id": cached_id,
                     "picnic_product_name": cached_name,
                     "food_id": food.get("id"),
+                    "image_url": _picnic_image_url(cached_image),
                 }
                 items_results.append(SyncItemResult(
                     name=ingredient_name, status=ItemStatus.cached,
@@ -578,11 +590,12 @@ async def _sync_generator(
             product_id = str(p.matched_product["id"])
             product_name = p.matched_product.get("name", "")
 
+            image_url = _picnic_image_url(p.matched_product.get("image_id"))
             if p.food.get("id"):
-                await mealie.update_food_extras(
-                    p.food["id"],
-                    {"picnic_product_id": product_id, "picnic_product_name": product_name},
-                )
+                extras = {"picnic_product_id": product_id, "picnic_product_name": product_name}
+                if p.matched_product.get("image_id"):
+                    extras["picnic_image_id"] = p.matched_product["image_id"]
+                await mealie.update_food_extras(p.food["id"], extras)
 
             cart_qty = p.llm_quantity if p.llm_quantity is not None else p.quantity
             await asyncio.to_thread(picnic.add_to_cart, product_id, cart_qty)
@@ -596,6 +609,7 @@ async def _sync_generator(
                 "picnic_product_id": product_id,
                 "picnic_product_name": product_name,
                 "food_id": p.food.get("id"),
+                "image_url": image_url,
             }
             items_results.append(SyncItemResult(
                 name=p.ingredient_name, status=item_status,
