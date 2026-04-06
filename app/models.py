@@ -18,6 +18,8 @@ class SyncItemResult(BaseModel):
     picnic_product_name: str | None = None
     picnic_product_id: str | None = None
     food_id: str | None = None
+    image_url: str | None = None
+    quantity: int = 1
     score: float | None = None
     error: str | None = None
 

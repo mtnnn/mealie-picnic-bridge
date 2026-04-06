@@ -302,15 +302,12 @@ async def set_food_product(food_id: str, body: dict):
     return {"ok": True}
 
 
-# === API: Sync Status ===
+# === API: Status & Cache ===
 
 
 @app.get("/status")
 async def status():
     return {"last_sync": models.last_sync_result}
-
-
-# === API: Sync (original, kept for backward compat) ===
 
 
 @app.delete("/cache")
@@ -326,57 +323,19 @@ async def delete_cache():
     return {"ok": True, "cleared": cleared}
 
 
-@app.post("/sync", response_model=SyncResult)
-async def sync(skip_cache: bool = False):
-    results: list[SyncItemResult] = []
-    async for event_type, data in _sync_generator(skip_cache):
-        if event_type == "item_result":
-            results.append(SyncItemResult(
-                name=data["name"],
-                status=ItemStatus(data["status"]),
-                picnic_product_name=data.get("picnic_product_name"),
-                picnic_product_id=data.get("picnic_product_id"),
-                score=data.get("score"),
-                error=data.get("error"),
-            ))
-        elif event_type == "sync_complete":
-            result = SyncResult(
-                timestamp=datetime.now(),
-                total_items=data["total_items"],
-                added_to_cart=data["added_to_cart"],
-                no_match=data["no_match"],
-                errors=data["errors"],
-                items=results,
-            )
-            models.last_sync_result = result
-            return result
+# === API: Match Stream (Phase 1 — search & match, no cart) ===
 
-    # Fallback if generator ends without sync_complete
-    result = SyncResult(
-        timestamp=datetime.now(),
-        total_items=len(results),
-        added_to_cart=sum(1 for r in results if r.status in (ItemStatus.matched, ItemStatus.llm_matched, ItemStatus.cached)),
-        no_match=sum(1 for r in results if r.status == ItemStatus.no_match),
-        errors=sum(1 for r in results if r.status == ItemStatus.error),
-        items=results,
-    )
-    models.last_sync_result = result
-    return result
+_match_cancel: asyncio.Event | None = None
 
 
-# === API: Sync Stream (SSE) ===
-
-_sync_cancel: asyncio.Event | None = None
-
-
-@app.post("/sync/stream")
-async def sync_stream(skip_cache: bool = False):
-    global _sync_cancel
-    _sync_cancel = asyncio.Event()
-    cancel = _sync_cancel
+@app.post("/match/stream")
+async def match_stream(skip_cache: bool = False):
+    global _match_cancel
+    _match_cancel = asyncio.Event()
+    cancel = _match_cancel
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        async for event_type, data in _sync_generator(skip_cache, cancel):
+        async for event_type, data in _match_generator(skip_cache, cancel):
             yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
     return StreamingResponse(
@@ -390,33 +349,92 @@ async def sync_stream(skip_cache: bool = False):
     )
 
 
-@app.post("/sync/stop")
-async def sync_stop():
-    if _sync_cancel is not None:
-        _sync_cancel.set()
+@app.post("/match/stop")
+async def match_stop():
+    if _match_cancel is not None:
+        _match_cancel.set()
         return {"ok": True}
-    return {"ok": False, "error": "No sync in progress"}
+    return {"ok": False, "error": "No match in progress"}
 
 
-# === Sync Generator (shared logic) ===
+# === API: Cart Sync (Phase 2 — add matched items to Picnic cart) ===
+
+_cart_cancel: asyncio.Event | None = None
 
 
-async def _sync_generator(
+@app.post("/cart/sync")
+async def cart_sync(items: list[dict]):
+    """Add a list of matched items to the Picnic cart.
+
+    Each item: {product_id, product_name, quantity, food_id?, image_url?}
+    """
+    global _cart_cancel
+    _cart_cancel = asyncio.Event()
+    cancel = _cart_cancel
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        added = 0
+        errors = 0
+        for i, item in enumerate(items):
+            if cancel.is_set():
+                yield f"event: cart_cancelled\ndata: {json.dumps({})}\n\n"
+                return
+
+            product_id = item.get("product_id")
+            quantity = item.get("quantity", 1)
+            product_name = item.get("product_name", "")
+
+            yield f"event: cart_item_start\ndata: {json.dumps({'index': i, 'product_name': product_name})}\n\n"
+
+            try:
+                await asyncio.to_thread(picnic.add_to_cart, product_id, quantity)
+                await asyncio.sleep(random.uniform(10, 25))
+                added += 1
+                yield f"event: cart_item_done\ndata: {json.dumps({'index': i, 'product_name': product_name})}\n\n"
+            except Exception as exc:
+                errors += 1
+                logger.exception("Failed to add %s to cart", product_id)
+                yield f"event: cart_item_error\ndata: {json.dumps({'index': i, 'error': str(exc)})}\n\n"
+
+        yield f"event: cart_complete\ndata: {json.dumps({'added': added, 'errors': errors, 'total': len(items)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/cart/stop")
+async def cart_stop():
+    if _cart_cancel is not None:
+        _cart_cancel.set()
+        return {"ok": True}
+    return {"ok": False, "error": "No cart sync in progress"}
+
+
+# === Match Generator (search + match, no cart adds) ===
+
+
+async def _match_generator(
     skip_cache: bool = False,
     cancel: asyncio.Event | None = None,
 ) -> AsyncGenerator[tuple[str, dict], None]:
-    """Core sync logic as an async generator yielding (event_type, data) tuples."""
-    items_results: list[SyncItemResult] = []
-    added = 0
+    """Search & match logic. Yields matched items but does NOT add to cart."""
     no_match_count = 0
     error_count = 0
+    matched_count = 0
     pending: list[PendingItem] = []
     item_index = 0
 
     shopping_lists = await mealie.get_shopping_lists()
     logger.info("Found %d shopping lists", len(shopping_lists))
 
-    # Pre-scan to collect all items for sync_start event
+    # Pre-scan to collect all items
     all_items_info = []
     all_raw_items = []
     for sl in shopping_lists:
@@ -438,17 +456,16 @@ async def _sync_generator(
             })
             all_raw_items.append((item, ingredient_name, food, raw_quantity, unit_name))
 
-    # Emit sync_start
-    yield "sync_start", {
+    yield "match_start", {
         "total_items": len(all_raw_items),
         "lists": [sl.get("name", "?") for sl in shopping_lists],
         "items": all_items_info,
     }
 
-    # --- Phase 1: Collect ---
+    # --- Phase 1: Search ---
     for raw_item, ingredient_name, food, raw_quantity, unit_name in all_raw_items:
         if cancel and cancel.is_set():
-            yield "sync_cancelled", {}
+            yield "match_cancelled", {}
             return
 
         if unit_name:
@@ -465,8 +482,6 @@ async def _sync_generator(
             cached_image = extras.get("picnic_image_id")
 
             if cached_id and not skip_cache:
-                await asyncio.to_thread(picnic.add_to_cart, cached_id, quantity)
-                await asyncio.sleep(random.uniform(10, 25))
                 yield "item_result", {
                     "name": ingredient_name,
                     "index": item_index,
@@ -475,13 +490,9 @@ async def _sync_generator(
                     "picnic_product_name": cached_name,
                     "food_id": food.get("id"),
                     "image_url": _picnic_image_url(cached_image),
+                    "quantity": quantity,
                 }
-                items_results.append(SyncItemResult(
-                    name=ingredient_name, status=ItemStatus.cached,
-                    picnic_product_id=cached_id, picnic_product_name=cached_name,
-                    food_id=food.get("id"),
-                ))
-                added += 1
+                matched_count += 1
                 item_index += 1
                 continue
 
@@ -493,10 +504,8 @@ async def _sync_generator(
                     "name": ingredient_name,
                     "index": item_index,
                     "status": "no_match",
+                    "food_id": food.get("id"),
                 }
-                items_results.append(SyncItemResult(
-                    name=ingredient_name, status=ItemStatus.no_match,
-                ))
                 no_match_count += 1
                 item_index += 1
                 continue
@@ -512,21 +521,18 @@ async def _sync_generator(
             ))
 
         except Exception as exc:
-            logger.exception("Error collecting item '%s'", ingredient_name)
+            logger.exception("Error searching item '%s'", ingredient_name)
             yield "item_result", {
                 "name": ingredient_name,
                 "index": item_index,
                 "status": "error",
                 "error": str(exc),
             }
-            items_results.append(SyncItemResult(
-                name=ingredient_name, status=ItemStatus.error, error=str(exc),
-            ))
             error_count += 1
 
         item_index += 1
 
-    # --- Phase 2: Match ---
+    # --- Phase 2: LLM / Fuzzy Match ---
     for p in pending:
         yield "item_start", {"name": p.ingredient_name, "index": p.index, "phase": "matching"}
 
@@ -544,7 +550,6 @@ async def _sync_generator(
                 p.matched_product = result.selected_product
                 p.llm_matched = result.selected_product is not None
                 qty = result.recommended_quantity
-                # Sanity check: weight/volume units should almost never need > 5 packages
                 if (p.unit_name
                         and p.unit_name.lower() in _WEIGHT_VOLUME_UNITS
                         and qty > 5):
@@ -568,89 +573,51 @@ async def _sync_generator(
             )
             p.matched_product = match[0] if match else None
 
-    # --- Phase 3: Process ---
+    # --- Emit match results ---
     for p in pending:
-        if cancel and cancel.is_set():
-            yield "sync_cancelled", {}
-            return
-
-        try:
-            if p.matched_product is None:
-                yield "item_result", {
-                    "name": p.ingredient_name,
-                    "index": p.index,
-                    "status": "no_match",
-                }
-                items_results.append(SyncItemResult(
-                    name=p.ingredient_name, status=ItemStatus.no_match,
-                ))
-                no_match_count += 1
-                continue
-
-            product_id = str(p.matched_product["id"])
-            product_name = p.matched_product.get("name", "")
-
-            image_url = _picnic_image_url(p.matched_product.get("image_id"))
-            if p.food.get("id"):
-                extras = {"picnic_product_id": product_id, "picnic_product_name": product_name}
-                if p.matched_product.get("image_id"):
-                    extras["picnic_image_id"] = p.matched_product["image_id"]
-                await mealie.update_food_extras(p.food["id"], extras)
-
-            cart_qty = p.llm_quantity if p.llm_quantity is not None else p.quantity
-            await asyncio.to_thread(picnic.add_to_cart, product_id, cart_qty)
-            await asyncio.sleep(random.uniform(10, 25))
-
-            item_status = ItemStatus.llm_matched if p.llm_matched else ItemStatus.matched
+        if p.matched_product is None:
             yield "item_result", {
                 "name": p.ingredient_name,
                 "index": p.index,
-                "status": item_status.value,
-                "picnic_product_id": product_id,
-                "picnic_product_name": product_name,
+                "status": "no_match",
                 "food_id": p.food.get("id"),
-                "image_url": image_url,
             }
-            items_results.append(SyncItemResult(
-                name=p.ingredient_name, status=item_status,
-                picnic_product_id=product_id, picnic_product_name=product_name,
-                food_id=p.food.get("id"),
-            ))
-            added += 1
+            no_match_count += 1
+            continue
 
-        except Exception as exc:
-            logger.exception("Error processing item '%s'", p.ingredient_name)
-            yield "item_result", {
-                "name": p.ingredient_name,
-                "index": p.index,
-                "status": "error",
-                "error": str(exc),
-            }
-            items_results.append(SyncItemResult(
-                name=p.ingredient_name, status=ItemStatus.error, error=str(exc),
-            ))
-            error_count += 1
+        product_id = str(p.matched_product["id"])
+        product_name = p.matched_product.get("name", "")
+        image_url = _picnic_image_url(p.matched_product.get("image_id"))
+        cart_qty = p.llm_quantity if p.llm_quantity is not None else p.quantity
 
-    # Emit sync_complete
-    total = len(items_results)
-    yield "sync_complete", {
+        # Save match to Mealie food extras
+        if p.food.get("id"):
+            extras_update = {"picnic_product_id": product_id, "picnic_product_name": product_name}
+            if p.matched_product.get("image_id"):
+                extras_update["picnic_image_id"] = p.matched_product["image_id"]
+            await mealie.update_food_extras(p.food["id"], extras_update)
+
+        item_status = ItemStatus.llm_matched if p.llm_matched else ItemStatus.matched
+        yield "item_result", {
+            "name": p.ingredient_name,
+            "index": p.index,
+            "status": item_status.value,
+            "picnic_product_id": product_id,
+            "picnic_product_name": product_name,
+            "food_id": p.food.get("id"),
+            "image_url": image_url,
+            "quantity": cart_qty,
+        }
+        matched_count += 1
+
+    total = matched_count + no_match_count + error_count
+    yield "match_complete", {
         "total_items": total,
-        "added_to_cart": added,
+        "matched": matched_count,
         "no_match": no_match_count,
         "errors": error_count,
     }
-
-    # Store last result
-    result = SyncResult(
-        timestamp=datetime.now(),
-        total_items=total,
-        added_to_cart=added,
-        no_match=no_match_count,
-        errors=error_count,
-        items=items_results,
-    )
-    models.last_sync_result = result
     logger.info(
-        "Sync complete: %d items, %d added, %d no match, %d errors",
-        total, added, no_match_count, error_count,
+        "Match complete: %d items, %d matched, %d no match, %d errors",
+        total, matched_count, no_match_count, error_count,
     )

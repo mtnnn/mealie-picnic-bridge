@@ -13,15 +13,28 @@
             </svg>
             Delete cache
         </button>
-        <button class="sync-btn" id="syncBtn" onclick="startSync()">
+        <button class="sync-btn" id="syncBtn" onclick="startMatch()">
             <div class="spinner"></div>
             <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
             </svg>
-            <span class="btn-label">Sync to Picnic</span>
+            <span class="btn-label">Start matching</span>
         </button>
-        <button class="stop-btn" id="stopBtn" onclick="stopSync()">
+        <button class="cart-sync-btn" id="cartSyncBtn" onclick="startCartSync()" style="display:none">
+            <div class="spinner"></div>
+            <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
+                <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+            </svg>
+            <span class="btn-label">Sync to cart</span>
+        </button>
+        <button class="stop-btn" id="stopBtn" onclick="stopMatch()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="4" y="4" width="16" height="16" rx="2"/>
+            </svg>
+            Stop
+        </button>
+        <button class="stop-btn" id="cartStopBtn" onclick="stopCartSync()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="4" y="4" width="16" height="16" rx="2"/>
             </svg>
