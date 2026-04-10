@@ -122,6 +122,7 @@ templates = Jinja2Templates(directory=APP_DIR / "templates")
 import time as _time
 _cache_bust = str(int(_time.time()))
 templates.env.globals["v"] = _cache_bust
+templates.env.globals["mealie_host"] = settings.MEALIE_HOST.rstrip("/")
 
 
 # === Pages ===

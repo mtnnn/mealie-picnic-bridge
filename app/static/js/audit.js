@@ -1,3 +1,9 @@
+// === Helpers ===
+function mealieRecipeUrl(slug) {
+    const host = (typeof MEALIE_HOST !== 'undefined' && MEALIE_HOST) || '';
+    return `${host}/g/home/r/${slug}`;
+}
+
 // === State ===
 let auditResult = null;
 let currentTab = 'overview';
@@ -316,25 +322,26 @@ function renderIngredientsTab() {
     const issues = auditResult.ingredient_issues;
     const info = document.getElementById('ingredientTabInfo');
     const btn = document.getElementById('fixIngredientsBtn');
+    btn.style.display = 'none'; // no batch fix — use Mealie's built-in parser
 
     if (!issues.length) {
         grid.innerHTML = '<div class="empty-state"><p>All ingredients are properly structured</p></div>';
         info.textContent = 'No issues found';
-        btn.style.display = 'none';
         return;
     }
 
-    info.textContent = `${issues.length} recipes with ingredient issues`;
-    btn.style.display = '';
+    info.textContent = `${issues.length} recipes with ingredient issues — click to open in Mealie`;
     grid.innerHTML = '';
 
     issues.forEach(item => {
         const card = document.createElement('div');
         card.className = 'recipe-card';
+        card.style.cursor = 'pointer';
+        card.onclick = () => window.open(mealieRecipeUrl(item.recipe_slug), '_blank');
 
-        const info = document.createElement('div');
-        info.className = 'recipe-card-info';
-        info.style.padding = '12px';
+        const cardInfo = document.createElement('div');
+        cardInfo.className = 'recipe-card-info';
+        cardInfo.style.padding = '12px';
 
         const name = document.createElement('div');
         name.className = 'recipe-card-name';
@@ -353,8 +360,12 @@ function renderIngredientsTab() {
         if (byType.missing_unit) parts.push(`${byType.missing_unit} missing unit`);
         detail.textContent = parts.join(', ');
 
-        info.append(name, detail);
-        card.appendChild(info);
+        const link = document.createElement('div');
+        link.style.cssText = 'font-size:11px;color:var(--picnic-red);margin-top:6px;font-weight:600;';
+        link.textContent = 'Open in Mealie →';
+
+        cardInfo.append(name, detail, link);
+        card.appendChild(cardInfo);
         grid.appendChild(card);
     });
 }
@@ -371,12 +382,14 @@ function renderStepsTab() {
         return;
     }
 
-    info.textContent = `${issues.length} recipes missing instructions`;
+    info.textContent = `${issues.length} recipes missing instructions — click to open in Mealie`;
     grid.innerHTML = '';
 
     issues.forEach(item => {
         const card = document.createElement('div');
         card.className = 'recipe-card';
+        card.style.cursor = 'pointer';
+        card.onclick = () => window.open(mealieRecipeUrl(item.recipe_slug), '_blank');
 
         const cardInfo = document.createElement('div');
         cardInfo.className = 'recipe-card-info';
@@ -390,7 +403,11 @@ function renderStepsTab() {
         detail.style.cssText = 'font-size:12px;color:var(--error);margin-top:4px;';
         detail.textContent = 'No instructions found';
 
-        cardInfo.append(name, detail);
+        const link = document.createElement('div');
+        link.style.cssText = 'font-size:11px;color:var(--picnic-red);margin-top:6px;font-weight:600;';
+        link.textContent = 'Open in Mealie →';
+
+        cardInfo.append(name, detail, link);
         card.appendChild(cardInfo);
         grid.appendChild(card);
     });
