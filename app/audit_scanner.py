@@ -318,7 +318,8 @@ class AuditScanner:
 
         # Translate
         proposal = await self.language_auditor.translate_recipe(
-            recipe, source_lang, self.target_language
+            recipe, source_lang, self.target_language,
+            mealie_client=self.mealie,
         )
 
         # Try to match translated ingredient names to existing foods

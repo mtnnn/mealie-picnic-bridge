@@ -52,10 +52,14 @@ DETECT_TOOL = {
 
 TRANSLATE_SYSTEM_PROMPT = """\
 You are a professional recipe translator. Translate the recipe from {source_lang} \
-to {target_lang}. Maintain cooking terminology accuracy. For ingredient food names, \
-provide the most common culinary term in the target language. Keep measurements and \
-quantities unchanged. Translate the recipe name, description, all instruction steps, \
-and ingredient food names.\
+to {target_lang}. Maintain cooking terminology accuracy.
+
+RECIPE NAME & DESCRIPTION: Translate fully.
+STEPS: Translate fully, keep exact measurements unchanged (e.g. "180°C" stays "180°C").
+INGREDIENT FOOD NAMES: You receive ONLY the food name (e.g. "all-purpose flour", \
+"salt", "Panko breadcrumbs"). Translate ONLY the food name to the target language \
+(e.g. "bloem", "zout", "panko paneermeel"). Do NOT add quantities, units, or modifiers \
+that were not in the original food name. Keep it short — just the food name.\
 """
 
 TRANSLATE_TOOL = {
@@ -200,17 +204,70 @@ class LanguageAuditor:
     # ------------------------------------------------------------------
 
     async def translate_recipe(
-        self, recipe: dict, source_lang: str, target_lang: str
+        self,
+        recipe: dict,
+        source_lang: str,
+        target_lang: str,
+        mealie_client: object | None = None,
     ) -> TranslationFixProposal:
         steps = recipe.get("recipeInstructions", [])
         step_texts = [s.get("text", "") for s in steps if s.get("text")]
         ingredients = recipe.get("recipeIngredient", [])
+
+        # Extract just food names, parsing unstructured ingredients if needed
         food_names = []
+        unstructured_texts = []
+        unstructured_indices = []
         for i, ing in enumerate(ingredients):
             food = ing.get("food")
-            name = food.get("name", "") if food else (ing.get("note") or "")
-            if name:
-                food_names.append({"index": i, "name": name})
+            if food and food.get("name"):
+                food_names.append({"index": i, "name": food["name"]})
+            else:
+                raw = ing.get("note") or ing.get("display") or ""
+                if raw:
+                    unstructured_texts.append(raw)
+                    unstructured_indices.append(i)
+
+        # Parse unstructured ingredients via Mealie to extract just food names
+        if unstructured_texts and mealie_client:
+            try:
+                parsed = await mealie_client.parse_ingredients(unstructured_texts)
+                for j, parsed_item in enumerate(parsed):
+                    pi = parsed_item.get("ingredient", {})
+                    parsed_food = pi.get("food")
+                    parsed_note = pi.get("note") or ""
+                    idx = unstructured_indices[j]
+                    if parsed_food and parsed_food.get("name"):
+                        name = parsed_food["name"]
+                        # Append note as separate info if present (e.g. "divided")
+                        if parsed_note:
+                            food_names.append({
+                                "index": idx,
+                                "name": name,
+                                "note": parsed_note,
+                            })
+                        else:
+                            food_names.append({"index": idx, "name": name})
+                    else:
+                        # Parser couldn't extract food — send raw text as fallback
+                        food_names.append({
+                            "index": idx,
+                            "name": unstructured_texts[j],
+                        })
+            except Exception:
+                logger.warning("Mealie parser failed, using raw texts", exc_info=True)
+                for j, idx in enumerate(unstructured_indices):
+                    food_names.append({
+                        "index": idx,
+                        "name": unstructured_texts[j],
+                    })
+        elif unstructured_texts:
+            # No mealie client — send raw texts
+            for j, idx in enumerate(unstructured_indices):
+                food_names.append({"index": idx, "name": unstructured_texts[j]})
+
+        # Sort by index for consistent ordering
+        food_names.sort(key=lambda x: x["index"])
 
         recipe_data = {
             "name": recipe.get("name", ""),
