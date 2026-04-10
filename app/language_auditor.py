@@ -51,15 +51,21 @@ DETECT_TOOL = {
 }
 
 TRANSLATE_SYSTEM_PROMPT = """\
-You are a professional recipe translator. Translate the recipe from {source_lang} \
-to {target_lang}. Maintain cooking terminology accuracy.
+You are a professional recipe translator. Translate the recipe to {target_lang}. \
+Maintain cooking terminology accuracy.
 
-RECIPE NAME & DESCRIPTION: Translate fully.
-STEPS: Translate fully, keep exact measurements unchanged (e.g. "180°C" stays "180°C").
+CRITICAL RULE: If any text is ALREADY in {target_lang}, return it exactly as-is. \
+Do not rephrase, improve, or re-translate text that is already in the target language. \
+Only translate text that is in a different language.
+
+RECIPE NAME & DESCRIPTION: Translate to {target_lang} if not already in that language.
+STEPS: Translate each step to {target_lang}. Keep exact measurements unchanged \
+(e.g. "180°C" stays "180°C").
 INGREDIENT FOOD NAMES: You receive ONLY the food name (e.g. "all-purpose flour", \
-"salt", "Panko breadcrumbs"). Translate ONLY the food name to the target language \
-(e.g. "bloem", "zout", "panko paneermeel"). Do NOT add quantities, units, or modifiers \
-that were not in the original food name. Keep it short — just the food name.\
+"salt", "Panko breadcrumbs"). Translate ONLY the food name to {target_lang} \
+(e.g. "bloem", "zout", "panko paneermeel"). If the food name is already in \
+{target_lang}, return it unchanged. Do NOT add quantities, units, or modifiers. \
+Keep it short — just the food name.\
 """
 
 TRANSLATE_TOOL = {
@@ -276,9 +282,7 @@ class LanguageAuditor:
             "ingredient_foods": food_names,
         }
 
-        system = TRANSLATE_SYSTEM_PROMPT.format(
-            source_lang=source_lang, target_lang=target_lang
-        )
+        system = TRANSLATE_SYSTEM_PROMPT.format(target_lang=target_lang)
         user_message = (
             "Translate this recipe.\n\n"
             + json.dumps(recipe_data, ensure_ascii=False)
