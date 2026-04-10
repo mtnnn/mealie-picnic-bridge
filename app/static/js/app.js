@@ -509,6 +509,16 @@ function addCartItem(data, alreadyAdded) {
         itemInfo.appendChild(changeBtn);
     }
 
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-product-btn';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.title = 'Verwijderen uit lijst';
+    removeBtn.onclick = (e) => {
+        e.stopPropagation();
+        removeCartItem(div, data.food_id || data.picnic_product_id);
+    };
+    itemInfo.appendChild(removeBtn);
+
     const status = document.createElement('span');
     status.className = 'item-status';
     if (alreadyAdded) {
@@ -529,6 +539,28 @@ function addCartItem(data, alreadyAdded) {
 
     if (window.innerWidth <= 768) {
         div.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+}
+
+function removeCartItem(cartItemEl, itemId) {
+    // Remove from matchedItems array
+    const foodId = cartItemEl.dataset.foodId;
+    const productId = cartItemEl.dataset.productId;
+    const idx = matchedItems.findIndex(m => m.food_id === foodId || m.product_id === productId);
+    if (idx >= 0) matchedItems.splice(idx, 1);
+
+    // Remove from DOM
+    cartItemEl.remove();
+    cartCount--;
+    document.getElementById('cartCount').textContent = cartCount;
+    updateCartEmpty();
+
+    // Update sync button label
+    const cartSyncBtn = document.getElementById('cartSyncBtn');
+    if (matchedItems.length > 0) {
+        cartSyncBtn.querySelector('.btn-label').textContent = `Sync ${matchedItems.length} to cart`;
+    } else {
+        cartSyncBtn.style.display = 'none';
     }
 }
 
