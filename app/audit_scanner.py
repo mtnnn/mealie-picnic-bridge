@@ -412,13 +412,14 @@ class AuditScanner:
 
             food_id = ing_item.get("matched_food_id") or ing_item.get("food_id")
             food_name = ing_item.get("translated_food_name") or ing_item.get("food_name")
-            needs_new = ing_item.get("needs_new_food", False)
 
             if food_id:
                 ingredients[idx]["food"] = {"id": food_id}
-            elif needs_new and food_name:
-                new_food = await self.mealie.create_food(food_name)
-                ingredients[idx]["food"] = {"id": new_food["id"]}
+            elif food_name:
+                # Search for existing food before creating
+                resolved_id = await self._find_or_create_food(food_name)
+                if resolved_id:
+                    ingredients[idx]["food"] = {"id": resolved_id}
 
         await self.mealie.update_recipe(recipe_slug, recipe)
 
@@ -428,6 +429,26 @@ class AuditScanner:
             success=True,
             detail=f"Translated recipe to {self.target_language}",
         )
+
+    async def _find_or_create_food(self, name: str) -> str | None:
+        """Search for an existing food by name, create if not found."""
+        matches = await self.mealie.search_foods(name)
+        # Exact match first
+        for m in matches:
+            if m.get("name", "").lower() == name.lower():
+                return m["id"]
+        # Close fuzzy match
+        for m in matches:
+            score = fuzz.token_set_ratio(name.lower(), m.get("name", "").lower())
+            if score >= FOOD_MATCH_THRESHOLD:
+                return m["id"]
+        # Create new
+        try:
+            new_food = await self.mealie.create_food(name)
+            return new_food["id"]
+        except Exception:
+            logger.warning("Failed to create food '%s'", name, exc_info=True)
+            return None
 
     # ------------------------------------------------------------------
     # Batch fix wizard
