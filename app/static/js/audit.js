@@ -24,16 +24,7 @@ let defaultTemplate = FALLBACK_TEMPLATE;
 // === Init ===
 document.addEventListener('DOMContentLoaded', () => {
     initPromptTemplate();
-    // Try loading cached results
-    fetch('/audit/results')
-        .then(r => r.ok ? r.json() : null)
-        .then(data => {
-            if (data) {
-                auditResult = data;
-                renderAuditResults();
-            }
-        })
-        .catch(() => {});
+    loadAuditResults();
 });
 
 // === Prompt Template ===
@@ -106,11 +97,6 @@ async function startScan() {
     progress.classList.add('visible');
     document.getElementById('auditSummary').textContent = 'Scanning...';
 
-    const eventSource = new EventSource('/audit/scan/stream', {
-        // POST is not directly supported by EventSource, use fetch + ReadableStream
-    });
-
-    // EventSource only supports GET. Use fetch for POST SSE.
     try {
         const resp = await fetch('/audit/scan/stream', { method: 'POST' });
         const reader = resp.body.getReader();
@@ -118,6 +104,7 @@ async function startScan() {
         let buffer = '';
         let totalRecipes = 0;
         let scannedCount = 0;
+        let scanDone = false;
 
         while (true) {
             const { done, value } = await reader.read();
@@ -132,25 +119,40 @@ async function startScan() {
                 if (line.startsWith('event: ')) {
                     eventType = line.slice(7).trim();
                 } else if (line.startsWith('data: ') && eventType) {
-                    const data = JSON.parse(line.slice(6));
-                    handleScanEvent(eventType, data);
-
-                    if (eventType === 'scan_start') {
-                        totalRecipes = data.total_recipes;
-                    } else if (eventType === 'recipe_scanned') {
-                        scannedCount++;
-                        const pct = totalRecipes > 0 ? (scannedCount / totalRecipes * 100) : 0;
-                        document.getElementById('scanProgressFill').style.width = pct + '%';
-                        document.getElementById('scanProgressCount').textContent =
-                            `${scannedCount} / ${totalRecipes}`;
-                        document.getElementById('scanProgressLabel').textContent =
-                            `Scanning: ${data.name}`;
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        if (eventType === 'scan_start') {
+                            totalRecipes = data.total_recipes;
+                            document.getElementById('scanProgressCount').textContent =
+                                `0 / ${totalRecipes}`;
+                        } else if (eventType === 'recipe_scanned') {
+                            scannedCount++;
+                            const pct = totalRecipes > 0 ? (scannedCount / totalRecipes * 100) : 0;
+                            document.getElementById('scanProgressFill').style.width = pct + '%';
+                            document.getElementById('scanProgressCount').textContent =
+                                `${scannedCount} / ${totalRecipes}`;
+                            document.getElementById('scanProgressLabel').textContent =
+                                `Scanning: ${data.name}`;
+                        } else if (eventType === 'scan_complete') {
+                            scanDone = true;
+                            document.getElementById('scanProgressLabel').textContent =
+                                'Scan complete! Loading results...';
+                            document.getElementById('scanProgressFill').style.width = '100%';
+                        }
+                    } catch (parseErr) {
+                        console.warn('Failed to parse SSE data:', parseErr);
                     }
                     eventType = '';
                 }
             }
         }
+
+        // Fetch full results from the cache endpoint
+        if (scanDone) {
+            await loadAuditResults();
+        }
     } catch (e) {
+        console.error('Scan error:', e);
         document.getElementById('auditSummary').textContent = 'Scan failed: ' + e.message;
     } finally {
         btn.disabled = false;
@@ -160,10 +162,15 @@ async function startScan() {
     }
 }
 
-function handleScanEvent(eventType, data) {
-    if (eventType === 'scan_complete') {
-        auditResult = data;
+async function loadAuditResults() {
+    try {
+        const resp = await fetch('/audit/results');
+        if (!resp.ok) return;
+        auditResult = await resp.json();
         renderAuditResults();
+    } catch (e) {
+        console.error('Failed to load audit results:', e);
+        document.getElementById('auditSummary').textContent = 'Error loading results';
     }
 }
 

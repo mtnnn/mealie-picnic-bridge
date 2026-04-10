@@ -174,7 +174,14 @@ class AuditScanner:
         )
         self._last_result = result
 
-        yield "scan_complete", result.model_dump()
+        yield "scan_complete", {
+            "total_recipes": total,
+            "overall_health_score": overall,
+            "photo_missing_count": photo_missing,
+            "ingredient_issue_recipe_count": len(all_ingredient_issues),
+            "step_issue_recipe_count": len(all_step_issues),
+            "language_issue_recipe_count": len(all_language_issues),
+        }
 
     # ------------------------------------------------------------------
     # Ingredient auditing
