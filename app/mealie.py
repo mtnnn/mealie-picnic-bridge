@@ -119,3 +119,36 @@ class MealieClient:
         )
         resp.raise_for_status()
         logger.info("Updated food %s extras: %s", food_id, extras)
+
+    async def parse_ingredients(
+        self, ingredients: list[str], parser: str = "nlp"
+    ) -> list[dict]:
+        """Call Mealie's ingredient parser API."""
+        resp = await self.client.post(
+            "/api/parser/ingredients",
+            json={"parser": parser, "ingredients": ingredients},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def update_recipe(self, slug: str, data: dict) -> dict:
+        """Full update of a recipe via PUT /api/recipes/{slug}."""
+        resp = await self.client.put(f"/api/recipes/{slug}", json=data)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def create_food(self, name: str) -> dict:
+        """Create a new food in Mealie."""
+        resp = await self.client.post("/api/foods", json={"name": name})
+        resp.raise_for_status()
+        return resp.json()
+
+    async def search_foods(self, query: str) -> list[dict]:
+        """Search foods by name."""
+        resp = await self.client.get(
+            "/api/foods",
+            params={"search": query, "perPage": 10},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("items", [])

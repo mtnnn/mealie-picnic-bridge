@@ -22,5 +22,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     BRAVE_API_KEY: str = ""
 
+    # Recipe audit settings
+    AUDIT_TARGET_LANGUAGE: str = "nl"
+    AUDIT_PARSER: str = "nlp"  # "nlp", "brute", or "openai"
+    AUDIT_LLM_PROVIDER: str = "anthropic"  # "anthropic" or "openai"
+
 
 settings = Settings()

@@ -5,73 +5,194 @@
     <!-- Header bar -->
     <div class="sync-bar">
         <div class="sync-info">
-            <div class="list-name">Recipe Photo Audit</div>
-            <div class="item-count" id="auditSummary">Loading recipes…</div>
+            <div class="list-name">Recipe Audit</div>
+            <div class="item-count" id="auditSummary">Click Scan to analyze all recipes</div>
         </div>
         <div class="sync-actions">
-            <button class="sync-btn" id="refreshBtn" onclick="loadRecipes()">
-                <div class="spinner" id="refreshSpinner" style="display:none;"></div>
-                <svg class="btn-icon" id="refreshIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                    <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/>
+            <button class="sync-btn" id="scanBtn" onclick="startScan()">
+                <div class="spinner" id="scanSpinner" style="display:none;"></div>
+                <svg class="btn-icon" id="scanIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
-                <span class="btn-label">Refresh</span>
+                <span class="btn-label">Scan All</span>
             </button>
         </div>
     </div>
 
-    <!-- Prompt editor -->
-    <div class="prompt-section prompt-section-standalone">
-        <div class="prompt-section-header">
-            <label class="prompt-section-label" for="promptTemplate">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                </svg>
-                AI Prompt
-            </label>
-            <div class="prompt-placeholders">
-                <span class="prompt-tag">{name}</span>
-                <span class="prompt-tag">{description}</span>
-                <span class="prompt-tag">{ingredients}</span>
+    <!-- Scan progress bar -->
+    <div class="progress-container" id="scanProgress">
+        <div class="progress-header">
+            <span class="progress-label" id="scanProgressLabel">Scanning recipes...</span>
+            <span class="progress-count" id="scanProgressCount">0 / 0</span>
+        </div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="scanProgressFill"></div>
+        </div>
+    </div>
+
+    <!-- Health score overview -->
+    <div class="audit-overview" id="auditOverview" style="display:none;">
+        <div class="overview-score">
+            <div class="score-circle" id="overallScore">0</div>
+            <div class="score-label">Health Score</div>
+        </div>
+        <div class="overview-stats">
+            <div class="stat-card stat-warning" onclick="switchTab('ingredients')">
+                <div class="stat-number" id="statIngredients">0</div>
+                <div class="stat-label">Ingredient Issues</div>
+            </div>
+            <div class="stat-card stat-warning" onclick="switchTab('steps')">
+                <div class="stat-number" id="statSteps">0</div>
+                <div class="stat-label">Missing Steps</div>
+            </div>
+            <div class="stat-card stat-warning" onclick="switchTab('language')">
+                <div class="stat-number" id="statLanguage">0</div>
+                <div class="stat-label">Wrong Language</div>
+            </div>
+            <div class="stat-card stat-warning" onclick="switchTab('photos')">
+                <div class="stat-number" id="statPhotos">0</div>
+                <div class="stat-label">Missing Photos</div>
             </div>
         </div>
-        <textarea class="prompt-textarea" id="promptTemplate" rows="3" placeholder="Loading prompt template…"></textarea>
-        <div class="prompt-section-footer">
-            <button class="prompt-reset-btn" id="promptResetBtn" onclick="resetPromptTemplate()">Reset to default</button>
-            <button class="prompt-save-btn" id="promptSaveBtn" onclick="savePromptTemplate()" disabled>Save changes</button>
+    </div>
+
+    <!-- Tab navigation -->
+    <div class="audit-tabs" id="auditTabs" style="display:none;">
+        <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+        <button class="tab-btn" data-tab="ingredients" onclick="switchTab('ingredients')">Ingredients</button>
+        <button class="tab-btn" data-tab="steps" onclick="switchTab('steps')">Steps</button>
+        <button class="tab-btn" data-tab="language" onclick="switchTab('language')">Language</button>
+        <button class="tab-btn" data-tab="photos" onclick="switchTab('photos')">Photos</button>
+    </div>
+
+    <!-- Tab: Overview -->
+    <div class="tab-content active" id="tab-overview">
+        <div id="overviewGrid" class="recipe-grid">
+            <div class="empty-state"><p>Run a scan to see recipe health</p></div>
         </div>
     </div>
 
-    <!-- Filter tabs -->
-    <div class="audit-filters" id="auditFilters" style="display:none;">
-        <button class="filter-btn active" id="filterAll" onclick="filterRecipes('all')">All</button>
-        <button class="filter-btn" id="filterMissing" onclick="filterRecipes('missing')">Missing Photo</button>
-        <button class="filter-btn" id="filterHas" onclick="filterRecipes('has')">Has Photo</button>
+    <!-- Tab: Ingredients -->
+    <div class="tab-content" id="tab-ingredients">
+        <div class="tab-header">
+            <span id="ingredientTabInfo"></span>
+            <button class="sync-btn fix-all-btn" id="fixIngredientsBtn" onclick="startBatchFix('ingredients')" style="display:none;">
+                Fix All
+            </button>
+        </div>
+        <div id="ingredientGrid" class="recipe-grid">
+            <div class="empty-state"><p>No ingredient issues found</p></div>
+        </div>
     </div>
 
-    <!-- Recipe grid -->
-    <div id="recipeGrid" class="recipe-grid">
-        <div class="empty-state"><p>Loading…</p></div>
+    <!-- Tab: Steps -->
+    <div class="tab-content" id="tab-steps">
+        <div class="tab-header">
+            <span id="stepsTabInfo"></span>
+        </div>
+        <div id="stepsGrid" class="recipe-grid">
+            <div class="empty-state"><p>No step issues found</p></div>
+        </div>
+    </div>
+
+    <!-- Tab: Language -->
+    <div class="tab-content" id="tab-language">
+        <div class="tab-header">
+            <span id="languageTabInfo"></span>
+            <button class="sync-btn fix-all-btn" id="fixLanguageBtn" onclick="startBatchFix('language')" style="display:none;">
+                Translate All
+            </button>
+        </div>
+        <div id="languageGrid" class="recipe-grid">
+            <div class="empty-state"><p>No language issues found</p></div>
+        </div>
+    </div>
+
+    <!-- Tab: Photos -->
+    <div class="tab-content" id="tab-photos">
+        <!-- Prompt editor -->
+        <div class="prompt-section prompt-section-standalone">
+            <div class="prompt-section-header">
+                <label class="prompt-section-label" for="promptTemplate">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                    </svg>
+                    AI Prompt
+                </label>
+                <div class="prompt-placeholders">
+                    <span class="prompt-tag">{name}</span>
+                    <span class="prompt-tag">{description}</span>
+                    <span class="prompt-tag">{ingredients}</span>
+                </div>
+            </div>
+            <textarea class="prompt-textarea" id="promptTemplate" rows="3" placeholder="Loading prompt template..."></textarea>
+            <div class="prompt-section-footer">
+                <button class="prompt-reset-btn" id="promptResetBtn" onclick="resetPromptTemplate()">Reset to default</button>
+                <button class="prompt-save-btn" id="promptSaveBtn" onclick="savePromptTemplate()" disabled>Save changes</button>
+            </div>
+        </div>
+        <!-- Photo filter -->
+        <div class="audit-filters" id="photoFilters" style="display:none;">
+            <button class="filter-btn active" data-filter="all" onclick="filterPhotos('all')">All</button>
+            <button class="filter-btn" data-filter="missing" onclick="filterPhotos('missing')">Missing Photo</button>
+            <button class="filter-btn" data-filter="has" onclick="filterPhotos('has')">Has Photo</button>
+        </div>
+        <div id="photoGrid" class="recipe-grid">
+            <div class="empty-state"><p>Run a scan to check photos</p></div>
+        </div>
     </div>
 
 </div>
 
+<!-- Batch Fix Modal -->
+<div class="modal-overlay" id="fixModal" style="display:none;" onclick="handleFixModalClick(event)">
+    <div class="modal fix-modal" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <div>
+                <h3 id="fixModalTitle">Fix Recipe</h3>
+                <div class="fix-progress-text" id="fixProgressText"></div>
+            </div>
+            <button class="modal-close" onclick="skipAndCloseBatchFix()">&times;</button>
+        </div>
+
+        <div class="fix-progress-bar-wrap">
+            <div class="progress-bar"><div class="progress-fill" id="fixProgressFill"></div></div>
+        </div>
+
+        <div id="fixProposal" class="fix-proposal"></div>
+
+        <div class="fix-actions" id="fixActions" style="display:none;">
+            <button class="fix-skip-btn" id="fixSkipBtn" onclick="confirmBatchFix('skip')">Skip</button>
+            <button class="sync-btn fix-apply-btn" id="fixApplyBtn" onclick="confirmBatchFix('apply')">Apply Fix</button>
+        </div>
+
+        <div id="fixWaiting" class="modal-searching">
+            <div class="spinner-large"></div>
+            <p>Preparing fix proposal...</p>
+        </div>
+
+        <div id="fixComplete" style="display:none;" class="fix-complete">
+            <div class="fix-complete-stats" id="fixCompleteStats"></div>
+            <button class="sync-btn" onclick="closeFixModal(); startScan();">Done &amp; Rescan</button>
+        </div>
+    </div>
+</div>
+
 <!-- Photo modal -->
-<div class="modal-overlay" id="photoModal" style="display:none;" onclick="handleModalClick(event)">
+<div class="modal-overlay" id="photoModal" style="display:none;" onclick="handlePhotoModalClick(event)">
     <div class="modal photo-modal" onclick="event.stopPropagation()">
         <div class="modal-header">
-            <h3 id="modalTitle">Find Photo</h3>
+            <h3 id="photoModalTitle">Find Photo</h3>
             <button class="modal-close" onclick="closePhotoModal()">&times;</button>
         </div>
 
-        <div id="modalSearching" class="modal-searching">
+        <div id="photoModalSearching" class="modal-searching">
             <div class="spinner-large"></div>
-            <p>Searching for photos — this may take a moment…</p>
+            <p>Searching for photos -- this may take a moment...</p>
         </div>
 
-        <div id="modalResults" style="display:none;">
+        <div id="photoModalResults" style="display:none;">
             <div class="photo-candidates">
-
-                <!-- DALL-E column -->
                 <div class="photo-candidate">
                     <div class="candidate-label">AI Generated (DALL-E 3)</div>
                     <div class="candidate-image" id="dalleImg"></div>
@@ -86,14 +207,11 @@
                         </button>
                     </div>
                 </div>
-
-                <!-- Brave column -->
                 <div class="photo-candidate">
                     <div class="candidate-label">Web Search (Brave)</div>
                     <div class="brave-grid" id="braveImgs"></div>
                     <div class="candidate-error" id="braveError"></div>
                 </div>
-
             </div>
         </div>
     </div>

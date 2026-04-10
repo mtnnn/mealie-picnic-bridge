@@ -14,7 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import models
+from app.audit_scanner import AuditScanner
 from app.config import settings
+from app.language_auditor import LanguageAuditor
 from app.llm_matcher import LLMMatcher, MatchRequest
 from app.matcher import find_best_match, parse_ingredient_name
 from app.mealie import MealieClient
@@ -36,6 +38,7 @@ mealie: MealieClient
 picnic: PicnicClient
 llm_matcher: LLMMatcher | None = None
 recipe_auditor: RecipeAuditor
+audit_scanner: AuditScanner
 
 APP_DIR = Path(__file__).parent
 
@@ -56,7 +59,7 @@ class PendingItem:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global mealie, picnic, llm_matcher, recipe_auditor
+    global mealie, picnic, llm_matcher, recipe_auditor, audit_scanner
     mealie = MealieClient(settings.MEALIE_HOST, settings.MEALIE_TOKEN)
     picnic = PicnicClient(
         username=settings.PICNIC_USERNAME,
@@ -79,6 +82,31 @@ async def lifespan(app: FastAPI):
         logger.info("LLM matching enabled (model: %s)", settings.LLM_MODEL)
     else:
         logger.info("Using fuzzy matching (LLM matching disabled)")
+
+    # Language auditor (optional — needs an API key)
+    language_auditor = None
+    provider = settings.AUDIT_LLM_PROVIDER
+    if provider == "anthropic" and settings.ANTHROPIC_API_KEY:
+        language_auditor = LanguageAuditor(
+            provider="anthropic",
+            anthropic_api_key=settings.ANTHROPIC_API_KEY,
+            model=settings.LLM_MODEL,
+        )
+    elif provider == "openai" and settings.OPENAI_API_KEY:
+        language_auditor = LanguageAuditor(
+            provider="openai",
+            openai_api_key=settings.OPENAI_API_KEY,
+        )
+    if language_auditor:
+        logger.info("Language auditor enabled (provider: %s)", provider)
+
+    audit_scanner = AuditScanner(
+        mealie=mealie,
+        mealie_host=settings.MEALIE_HOST,
+        language_auditor=language_auditor,
+        target_language=settings.AUDIT_TARGET_LANGUAGE,
+        parser=settings.AUDIT_PARSER,
+    )
     logger.info("Clients initialized")
     yield
     picnic.close()
@@ -151,6 +179,140 @@ async def audit_apply(slug: str, body: dict):
     except Exception as exc:
         logger.exception("Failed to apply photo for %s", slug)
         raise HTTPException(status_code=502, detail=str(exc))
+
+
+# === API: Audit Scan & Fix ===
+
+_scan_cancel: asyncio.Event | None = None
+
+
+@app.post("/audit/scan/stream")
+async def audit_scan_stream():
+    global _scan_cancel
+    _scan_cancel = asyncio.Event()
+    cancel = _scan_cancel
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        async for event_type, data in audit_scanner.scan_all(cancel):
+            yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/audit/scan/stop")
+async def audit_scan_stop():
+    if _scan_cancel is not None:
+        _scan_cancel.set()
+        return {"ok": True}
+    return {"ok": False, "error": "No scan in progress"}
+
+
+@app.get("/audit/results")
+async def audit_results():
+    result = audit_scanner.last_result
+    if result is None:
+        raise HTTPException(status_code=404, detail="No scan results available. Run a scan first.")
+    return result.model_dump()
+
+
+@app.post("/audit/fix/ingredients/propose")
+async def audit_fix_ingredients_propose(body: dict):
+    recipe_slug = body.get("recipe_slug")
+    if not recipe_slug:
+        raise HTTPException(status_code=422, detail="recipe_slug required")
+    try:
+        parser = body.get("parser")
+        proposal = await audit_scanner.propose_ingredient_fix(recipe_slug, parser)
+        return proposal.model_dump()
+    except Exception as exc:
+        logger.exception("Failed to propose ingredient fix for %s", recipe_slug)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/audit/fix/ingredients/apply")
+async def audit_fix_ingredients_apply(body: dict):
+    recipe_slug = body.get("recipe_slug")
+    fixes = body.get("fixes", [])
+    if not recipe_slug:
+        raise HTTPException(status_code=422, detail="recipe_slug required")
+    try:
+        result = await audit_scanner.apply_ingredient_fix(recipe_slug, fixes)
+        return result.model_dump()
+    except Exception as exc:
+        logger.exception("Failed to apply ingredient fix for %s", recipe_slug)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/audit/fix/language/propose")
+async def audit_fix_language_propose(body: dict):
+    recipe_slug = body.get("recipe_slug")
+    if not recipe_slug:
+        raise HTTPException(status_code=422, detail="recipe_slug required")
+    try:
+        proposal = await audit_scanner.propose_language_fix(recipe_slug)
+        return proposal.model_dump()
+    except Exception as exc:
+        logger.exception("Failed to propose language fix for %s", recipe_slug)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/audit/fix/language/apply")
+async def audit_fix_language_apply(body: dict):
+    recipe_slug = body.get("recipe_slug")
+    if not recipe_slug:
+        raise HTTPException(status_code=422, detail="recipe_slug required")
+    try:
+        result = await audit_scanner.apply_language_fix(recipe_slug, body)
+        return result.model_dump()
+    except Exception as exc:
+        logger.exception("Failed to apply language fix for %s", recipe_slug)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+_batch_cancel: asyncio.Event | None = None
+
+
+@app.post("/audit/fix/batch/stream")
+async def audit_fix_batch_stream(body: dict):
+    fix_type = body.get("fix_type")
+    recipe_slugs = body.get("recipe_slugs", [])
+    parser = body.get("parser")
+    if not fix_type or not recipe_slugs:
+        raise HTTPException(status_code=422, detail="fix_type and recipe_slugs required")
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        async for event_type, data in audit_scanner.batch_fix_stream(
+            fix_type, recipe_slugs, parser
+        ):
+            yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/audit/fix/batch/confirm")
+async def audit_fix_batch_confirm(body: dict):
+    recipe_slug = body.get("recipe_slug")
+    action = body.get("action", "skip")
+    if not recipe_slug:
+        raise HTTPException(status_code=422, detail="recipe_slug required")
+    ok = audit_scanner.confirm_batch_fix(recipe_slug, action)
+    return {"ok": ok}
 
 
 # === API: Auth ===
