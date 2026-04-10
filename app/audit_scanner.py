@@ -362,11 +362,11 @@ class AuditScanner:
             if fix.get("quantity") is not None:
                 ing["quantity"] = fix["quantity"]
             if fix.get("unit_id"):
-                ing["unit"] = {"id": fix["unit_id"]}
+                ing["unit"] = {"id": fix["unit_id"], "name": fix.get("unit") or ""}
             elif fix.get("unit"):
                 ing["unit"] = {"name": fix["unit"]}
             if fix.get("food_id"):
-                ing["food"] = {"id": fix["food_id"]}
+                ing["food"] = {"id": fix["food_id"], "name": fix.get("food") or ""}
             elif fix.get("food"):
                 ing["food"] = {"name": fix["food"]}
 
@@ -414,12 +414,14 @@ class AuditScanner:
             food_name = ing_item.get("translated_food_name") or ing_item.get("food_name")
 
             if food_id:
-                ingredients[idx]["food"] = {"id": food_id}
+                # Mealie requires both id and name on food
+                resolved_name = ing_item.get("matched_food_name") or food_name or ""
+                ingredients[idx]["food"] = {"id": food_id, "name": resolved_name}
             elif food_name:
                 # Search for existing food before creating
-                resolved_id = await self._find_or_create_food(food_name)
-                if resolved_id:
-                    ingredients[idx]["food"] = {"id": resolved_id}
+                resolved = await self._find_or_create_food(food_name)
+                if resolved:
+                    ingredients[idx]["food"] = {"id": resolved["id"], "name": resolved["name"]}
 
         await self.mealie.update_recipe(recipe_slug, recipe)
 
@@ -430,22 +432,23 @@ class AuditScanner:
             detail=f"Translated recipe to {self.target_language}",
         )
 
-    async def _find_or_create_food(self, name: str) -> str | None:
-        """Search for an existing food by name, create if not found."""
+    async def _find_or_create_food(self, name: str) -> dict | None:
+        """Search for an existing food by name, create if not found.
+        Returns {"id": ..., "name": ...} or None."""
         matches = await self.mealie.search_foods(name)
         # Exact match first
         for m in matches:
             if m.get("name", "").lower() == name.lower():
-                return m["id"]
+                return {"id": m["id"], "name": m["name"]}
         # Close fuzzy match
         for m in matches:
             score = fuzz.token_set_ratio(name.lower(), m.get("name", "").lower())
             if score >= FOOD_MATCH_THRESHOLD:
-                return m["id"]
+                return {"id": m["id"], "name": m["name"]}
         # Create new
         try:
             new_food = await self.mealie.create_food(name)
-            return new_food["id"]
+            return {"id": new_food["id"], "name": new_food.get("name", name)}
         except Exception:
             logger.warning("Failed to create food '%s'", name, exc_info=True)
             return None

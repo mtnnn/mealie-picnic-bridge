@@ -134,6 +134,8 @@ class MealieClient:
     async def update_recipe(self, slug: str, data: dict) -> dict:
         """Full update of a recipe via PUT /api/recipes/{slug}."""
         resp = await self.client.put(f"/api/recipes/{slug}", json=data)
+        if resp.status_code == 422:
+            logger.error("Recipe update 422 for %s: %s", slug, resp.text[:1000])
         resp.raise_for_status()
         return resp.json()
 
