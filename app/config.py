@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # Recipe audit settings
     AUDIT_TARGET_LANGUAGE: str = "nl"
-    AUDIT_PARSER: str = "nlp"  # "nlp", "brute", or "openai"
+    AUDIT_PARSER: str = "openai"  # "nlp", "brute", or "openai"
     AUDIT_LLM_PROVIDER: str = "anthropic"  # "anthropic" or "openai"
 
 
