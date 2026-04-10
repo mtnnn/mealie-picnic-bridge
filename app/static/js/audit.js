@@ -706,39 +706,56 @@ async function startBatchFix(fixType) {
     document.getElementById('fixWaiting').style.display = 'flex';
     document.getElementById('fixComplete').style.display = 'none';
 
-    try {
-        const resp = await fetch('/audit/fix/batch/stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fix_type: fixType, recipe_slugs: slugs }),
-        });
+    const maxRetries = 2;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const resp = await fetch('/audit/fix/batch/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fix_type: fixType, recipe_slugs: slugs }),
+            });
 
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-            let eventType = '';
-            for (const line of lines) {
-                if (line.startsWith('event: ')) {
-                    eventType = line.slice(7).trim();
-                } else if (line.startsWith('data: ') && eventType) {
-                    const data = JSON.parse(line.slice(6));
-                    handleBatchFixEvent(eventType, data, fixType);
-                    eventType = '';
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                let eventType = '';
+                for (const line of lines) {
+                    if (line.startsWith('event: ')) {
+                        eventType = line.slice(7).trim();
+                    } else if (line.startsWith('data: ') && eventType) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            handleBatchFixEvent(eventType, data, fixType);
+                        } catch (parseErr) {
+                            console.warn('SSE parse error:', parseErr);
+                        }
+                        eventType = '';
+                    }
                 }
             }
+            break; // success, exit retry loop
+        } catch (e) {
+            console.error(`Batch fix attempt ${attempt + 1} failed:`, e);
+            if (attempt < maxRetries) {
+                document.getElementById('fixWaiting').innerHTML =
+                    '<div class="spinner-large"></div><p>Connection lost, retrying...</p>';
+                await new Promise(r => setTimeout(r, 1500));
+            } else {
+                document.getElementById('fixWaiting').innerHTML =
+                    `<p style="color:var(--error)">Error: ${escHtml(e.message)}</p>`;
+            }
         }
-    } catch (e) {
-        document.getElementById('fixWaiting').innerHTML =
-            `<p style="color:var(--error)">Error: ${escHtml(e.message)}</p>`;
     }
 }
 

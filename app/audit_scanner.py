@@ -385,29 +385,40 @@ class AuditScanner:
     ) -> FixResult:
         recipe = await self.mealie.get_recipe(recipe_slug)
 
-        if data.get("name"):
-            recipe["name"] = data["name"]
-        if data.get("description") is not None:
-            recipe["description"] = data["description"]
-        if data.get("steps"):
+        # TranslationFixProposal uses proposed_name/proposed_description/proposed_steps
+        # Direct API calls use name/description/steps — support both
+        new_name = data.get("proposed_name") or data.get("name")
+        new_desc = data.get("proposed_description") if "proposed_description" in data else data.get("description")
+        new_steps = data.get("proposed_steps") or data.get("steps")
+
+        if new_name:
+            recipe["name"] = new_name
+        if new_desc is not None:
+            recipe["description"] = new_desc
+        if new_steps:
             instructions = recipe.get("recipeInstructions", [])
-            for i, step_text in enumerate(data["steps"]):
+            for i, step_text in enumerate(new_steps):
                 if i < len(instructions):
                     instructions[i]["text"] = step_text
             recipe["recipeInstructions"] = instructions
 
-        # Relink ingredient foods
-        for ing_food in data.get("ingredient_foods", []):
-            idx = ing_food.get("ingredient_index", -1)
-            ingredients = recipe.get("recipeIngredient", [])
-            if 0 <= idx < len(ingredients):
-                food_id = ing_food.get("food_id")
-                food_name = ing_food.get("food_name")
-                if food_id:
-                    ingredients[idx]["food"] = {"id": food_id}
-                elif food_name:
-                    new_food = await self.mealie.create_food(food_name)
-                    ingredients[idx]["food"] = {"id": new_food["id"]}
+        # Relink ingredient foods — support both field names
+        translations = data.get("ingredient_translations") or data.get("ingredient_foods") or []
+        ingredients = recipe.get("recipeIngredient", [])
+        for ing_item in translations:
+            idx = ing_item.get("ingredient_index", -1)
+            if not (0 <= idx < len(ingredients)):
+                continue
+
+            food_id = ing_item.get("matched_food_id") or ing_item.get("food_id")
+            food_name = ing_item.get("translated_food_name") or ing_item.get("food_name")
+            needs_new = ing_item.get("needs_new_food", False)
+
+            if food_id:
+                ingredients[idx]["food"] = {"id": food_id}
+            elif needs_new and food_name:
+                new_food = await self.mealie.create_food(food_name)
+                ingredients[idx]["food"] = {"id": new_food["id"]}
 
         await self.mealie.update_recipe(recipe_slug, recipe)
 
