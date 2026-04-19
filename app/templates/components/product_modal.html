@@ -1,0 +1,22 @@
+<!-- Product Search Modal -->
+<div class="modal-overlay" id="productModal">
+    <div class="modal product-modal">
+        <div class="modal-header">
+            <div>
+                <strong id="productModalTitle">Picnic product kiezen</strong>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:2px;" id="productModalIngredient"></div>
+            </div>
+            <button class="modal-close" onclick="closeProductModal()">&times;</button>
+        </div>
+        <input
+            class="product-search-input"
+            id="productSearchInput"
+            type="text"
+            placeholder="Zoek op Picnic..."
+            oninput="onProductSearchInput()"
+        >
+        <div class="product-results" id="productResults">
+            <div class="product-search-empty">Typ om te zoeken</div>
+        </div>
+    </div>
+</div>

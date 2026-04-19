@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="main-container">
+    <!-- Header bar -->
+    <div class="sync-bar">
+        <div class="sync-info">
+            <div class="list-name">Ingredient Mapping</div>
+            <div class="item-count" id="mappingSummary">Loading recipes...</div>
+        </div>
+        <div class="sync-actions">
+            <input type="text" class="mapping-filter-input" id="recipeSearchInput"
+                   placeholder="Filter recipes..." oninput="filterRecipes()">
+        </div>
+    </div>
+
+    <div class="panels">
+        <!-- Left: Recipe list -->
+        <div class="panel recipes">
+            <div class="panel-header">
+                <h3>Recipes</h3>
+                <span class="count" id="recipeCount">0</span>
+            </div>
+            <div class="panel-body" id="recipeList">
+                <div class="empty-state"><p>Loading recipes...</p></div>
+            </div>
+        </div>
+
+        <!-- Right: Ingredients for selected recipe -->
+        <div class="panel ingredients">
+            <div class="panel-header">
+                <h3 id="ingredientPanelTitle">Ingredients</h3>
+                <span class="count" id="ingredientCount">0</span>
+            </div>
+            <div class="panel-body" id="ingredientList">
+                <div class="empty-state"><p>Select a recipe to see its ingredients</p></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% include "components/product_modal.html" %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/mapping.js?v={{ v }}"></script>
+{% endblock %}

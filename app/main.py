@@ -138,6 +138,64 @@ async def audit_page(request: Request):
     return templates.TemplateResponse(request, "audit.html")
 
 
+@app.get("/mapping", response_class=HTMLResponse)
+async def mapping_page(request: Request):
+    return templates.TemplateResponse(request, "mapping.html")
+
+
+# === API: Mapping ===
+
+
+@app.get("/recipes")
+async def list_recipes():
+    """Return all recipes with summary info for the mapping page."""
+    recipes = await mealie.get_all_recipes()
+    host = settings.MEALIE_HOST.rstrip("/")
+    return [
+        {
+            "id": r.get("id"),
+            "slug": r.get("slug"),
+            "name": r.get("name", ""),
+            "image": f"{host}/api/media/recipes/{r['id']}/images/min-original.webp"
+            if r.get("image")
+            else None,
+        }
+        for r in recipes
+    ]
+
+
+@app.get("/recipes/{slug}/ingredients")
+async def get_recipe_ingredients(slug: str):
+    """Return ingredients for a recipe with their Picnic mapping status."""
+    recipe = await mealie.get_recipe(slug)
+    ingredients = []
+    for ing in recipe.get("recipeIngredient", []):
+        food = ing.get("food") or {}
+        extras = food.get("extras") or {}
+        mapped_image_id = extras.get("picnic_image_id")
+        ingredients.append(
+            {
+                "display": ing.get("display", ""),
+                "note": ing.get("note", ""),
+                "quantity": ing.get("quantity"),
+                "unit": (ing.get("unit") or {}).get("name"),
+                "food_id": food.get("id"),
+                "food_name": food.get("name"),
+                "has_food": bool(food.get("id")),
+                "is_mapped": bool(extras.get("picnic_product_id")),
+                "picnic_product_id": extras.get("picnic_product_id"),
+                "picnic_product_name": extras.get("picnic_product_name"),
+                "picnic_image_url": _picnic_image_url(mapped_image_id),
+                "picnic_quantity": extras.get("picnic_quantity"),
+            }
+        )
+    return {
+        "slug": recipe.get("slug"),
+        "name": recipe.get("name"),
+        "ingredients": ingredients,
+    }
+
+
 # === API: Audit ===
 
 
@@ -446,6 +504,7 @@ async def picnic_search_products(q: str):
             "unit_quantity": p.get("unit_quantity", ""),
             "display_price": p.get("display_price", 0),
             "image_url": _picnic_image_url(p.get("image_id")),
+            "image_id": p.get("image_id"),
         }
         for p in products[:20]
     ]
@@ -458,11 +517,21 @@ async def set_food_product(food_id: str, body: dict):
     product_name = body.get("product_name", "")
     if not product_id:
         raise HTTPException(status_code=422, detail="product_id required")
-    await mealie.update_food_extras(
-        food_id,
-        {"picnic_product_id": product_id, "picnic_product_name": product_name},
-    )
+    extras = {"picnic_product_id": product_id, "picnic_product_name": product_name}
+    if body.get("image_id"):
+        extras["picnic_image_id"] = body["image_id"]
+    await mealie.update_food_extras(food_id, extras)
     return {"ok": True}
+
+
+@app.delete("/foods/{food_id}/product")
+async def clear_food_product(food_id: str):
+    """Clear the Picnic product mapping from a single food."""
+    resp = await mealie.client.get(f"/api/foods/{food_id}")
+    resp.raise_for_status()
+    food = resp.json()
+    cleared = await mealie.clear_food_picnic_cache(food_id, food)
+    return {"ok": True, "cleared": cleared}
 
 
 # === API: Status & Cache ===

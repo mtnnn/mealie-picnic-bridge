@@ -10,7 +10,9 @@ let matchedItems = [];
 // === Page Load ===
 document.addEventListener('DOMContentLoaded', async () => {
     await checkAuthStatus();
-    await loadShoppingLists();
+    if (document.getElementById('shoppingList')) {
+        await loadShoppingLists();
+    }
     setupCodeInputs();
 });
 
@@ -750,6 +752,8 @@ document.addEventListener('click', (e) => {
 let _productModalFoodId = null;
 let _productModalCartItem = null;
 let _productSearchTimeout = null;
+// Callback for page-specific product selection (e.g., mapping page)
+let _onProductSelected = null;
 
 function openProductModal(foodId, ingredientName, cartItemEl) {
     _productModalFoodId = foodId;
@@ -846,6 +850,13 @@ async function selectProduct(product) {
     if (!_productModalFoodId) return;
 
     try {
+        // Page-specific callback (e.g., mapping page)
+        if (_onProductSelected) {
+            await _onProductSelected(product, _productModalFoodId);
+            closeProductModal();
+            return;
+        }
+
         await fetch('/foods/' + _productModalFoodId + '/product', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

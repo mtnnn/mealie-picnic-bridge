@@ -89,12 +89,13 @@ class MealieClient:
         return foods
 
     async def clear_food_picnic_cache(self, food_id: str, food: dict) -> bool:
-        """Remove picnic_product_id/name from a food's extras. Returns True if changed."""
+        """Remove all picnic_* keys from a food's extras. Returns True if changed."""
         extras = food.get("extras") or {}
-        if "picnic_product_id" not in extras and "picnic_product_name" not in extras:
+        picnic_keys = [k for k in extras if k.startswith("picnic_")]
+        if not picnic_keys:
             return False
-        extras.pop("picnic_product_id", None)
-        extras.pop("picnic_product_name", None)
+        for k in picnic_keys:
+            extras.pop(k, None)
         resp = await self.client.put(
             f"/api/foods/{food_id}",
             json={**food, "extras": extras},

@@ -865,6 +865,96 @@ body {
 .cart-item-text { flex: 1; min-width: 0; }
 .cart-item-text .item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* === Mapping Page === */
+.mapping-filter-input {
+    padding: 6px 12px;
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    font-size: 13px;
+    outline: none;
+    width: 200px;
+    transition: border-color 0.2s;
+}
+.mapping-filter-input:focus { border-color: var(--picnic-red); }
+
+.panel.recipes .panel-header { border-bottom-color: var(--picnic-red); }
+.panel.ingredients .panel-header { border-bottom-color: var(--success); }
+
+.mapping-recipe-item {
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 2px solid transparent;
+}
+.mapping-recipe-item:hover { background: var(--picnic-red-light); }
+.mapping-recipe-item.selected {
+    background: var(--picnic-red-light);
+    border-color: var(--picnic-red);
+}
+.mapping-recipe-thumb {
+    width: 40px; height: 40px;
+    border-radius: 6px;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+.mapping-recipe-thumb-placeholder {
+    width: 40px; height: 40px;
+    border-radius: 6px;
+    background: var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: var(--text-muted);
+    font-size: 16px;
+    flex-shrink: 0;
+}
+.mapping-recipe-name { font-weight: 500; font-size: 14px; }
+
+/* Ingredient mapping states */
+.mapping-ingredient { gap: 10px; }
+.mapping-ingredient.mapped {
+    background: var(--success-light);
+    border-left: 3px solid var(--success);
+}
+.mapping-ingredient.unmapped {
+    background: #f8f8f8;
+    border-left: 3px solid var(--warning);
+}
+.mapping-ingredient.no-food {
+    background: #f5f5f5;
+    border-left: 3px solid #ddd;
+    opacity: 0.6;
+}
+.mapping-ingredient-info { flex: 1; min-width: 0; }
+.mapping-no-food-badge { background: #eee; color: var(--text-muted); }
+
+.mapping-product {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+.mapping-product-name {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mapping-map-btn {
+    font-size: 12px;
+    padding: 6px 16px;
+    flex-shrink: 0;
+}
+
 /* === Audit Overview === */
 .audit-overview {
     display: flex;
